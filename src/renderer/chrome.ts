@@ -30,7 +30,7 @@ export function restoreTheme(): void {
   setTheme(known ? (stored as VuiTheme) : 'neon-green');
 }
 
-export function mountChrome(parent: Element, title: string, icon: string, controls: WindowControls): void {
+export function mountChrome(parent: Element, title: string, icon: string, controls: WindowControls): HTMLElement {
   const bar = document.createElement('vui-titlebar');
   bar.setAttribute('label', title);
   bar.setAttribute('minimize-label', 'Свернуть');
@@ -65,7 +65,8 @@ export function mountChrome(parent: Element, title: string, icon: string, contro
     menu.append(item);
   }
 
-  themeButton.addEventListener('click', () => {
+  themeButton.addEventListener('click', (event) => {
+    event.stopPropagation();
     const rect = themeButton.getBoundingClientRect();
     menu.showAt(rect.left, rect.bottom);
   });
@@ -75,6 +76,8 @@ export function mountChrome(parent: Element, title: string, icon: string, contro
   bar.addEventListener('close', () => controls.close());
   controls.onMaximized((maximized) => bar.toggleAttribute('maximized', maximized));
 
-  bar.append(mark, themeButton, menu);
+  bar.append(mark, themeButton);
   parent.append(bar);
+  document.body.append(menu);
+  return bar;
 }

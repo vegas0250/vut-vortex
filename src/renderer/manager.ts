@@ -8,14 +8,15 @@ import 'vui/dialog';
 import 'vui/breadcrumbs';
 import 'vui/text';
 import 'vui/nav';
-import 'vui/properties';
 import 'vui/empty';
 import 'vui/switch';
 import 'vui/tabs';
 import 'vui/menu';
 import 'vui/icon';
+import 'vui/icon-button';
 import { CommandRegistry, ShortcutRegistry } from 'vui/interaction';
 import type { VButton } from 'vui/button';
+import type { VIconButton } from 'vui/icon-button';
 import type { VDataGrid, VDataGridRow } from 'vui/data-grid';
 import type { VDialog } from 'vui/dialog';
 import type { VInput } from 'vui/input';
@@ -27,6 +28,7 @@ import {
   formatModified,
   formatSize,
   iconFor,
+  placeIcon,
   kindLabel,
   parentPath,
   pathTitle,
@@ -34,7 +36,7 @@ import {
   type FileEntry,
   type Place,
 } from '../shared/files';
-import type { Result, SourceRequest } from '../shared/ipc';
+import type { OpenedSource, Result, SourceRequest } from '../shared/ipc';
 
 interface Session extends SourceRequest {
   id: string;
@@ -46,17 +48,24 @@ export function mountManager(): void {
   restoreTheme();
   const app = document.querySelector('#app');
   if (!app) throw new Error('Не найдено окно приложения');
-  mountChrome(app, 'Vortex', 'folder', window.vortex);
+  const bar = mountChrome(app, 'Vortex', 'folder', window.vortex);
 
   const shell = document.createElement('vui-shell');
   shell.setAttribute('label', 'Vortex');
-  shell.setAttribute('nav-label', 'Места');
-  shell.setAttribute('aside-label', 'Свойства');
+  shell.setAttribute('nav-label', 'Быстрые ссылки');
+  shell.setAttribute('aside-label', 'Вторая панель');
   shell.setAttribute('skip-label', 'К списку файлов');
+  shell.setAttribute('aside-collapsed', '');
+  shell.setAttribute('resize-label', 'Ширина панели');
+  shell.setAttribute('aside-expand-label', 'Открыть панель');
+  shell.setAttribute('aside-collapse-label', 'Закрыть панель');
 
-  const toolbar = document.createElement('vui-toolbar');
-  toolbar.setAttribute('slot', 'toolbar');
-  toolbar.setAttribute('label', 'Команды');
+  const navigate = document.createElement('vui-toolbar');
+  navigate.setAttribute('slot', 'header');
+  navigate.setAttribute('label', 'Навигация');
+  const commandBar = document.createElement('vui-toolbar');
+  commandBar.setAttribute('slot', 'toolbar');
+  commandBar.setAttribute('label', 'Команды');
 
   function button(label: string, icon: string, slot = 'start'): VButton {
     const element = document.createElement('vui-button') as VButton;
@@ -70,17 +79,25 @@ export function mountManager(): void {
     return element;
   }
 
-  const backButton = button('Назад', 'arrow-left');
-  const forwardButton = button('Вперёд', 'arrow-right');
-  const upButton = button('Вверх', 'arrow-up');
-  const newButton = button('Каталог', 'folder-plus');
-  const renameButton = button('Переименовать', 'pencil', '');
-  const copyButton = button('Копировать', 'copy', '');
-  const moveButton = button('Переместить', 'folder', '');
-  const deleteButton = button('Удалить', 'trash-2', '');
+  function iconButton(label: string, icon: string): VIconButton {
+    const element = document.createElement('vui-icon-button') as VIconButton;
+    element.setAttribute('variant', 'ghost');
+    element.setAttribute('size', 'large');
+    element.setAttribute('slot', 'start');
+    element.setAttribute('label', label);
+    element.setAttribute('name', icon);
+    return element;
+  }
+
+  const backButton = iconButton('Назад', 'arrow-left');
+  const forwardButton = iconButton('Вперёд', 'arrow-right');
+  const upButton = iconButton('Вверх', 'arrow-up');
+  const refreshButton = iconButton('Обновить', 'refresh-cw');
+  const renameButton = button('Переименовать', 'pencil');
+  const copyButton = button('Копировать', 'copy');
+  const moveButton = button('Переместить', 'folder');
+  const deleteButton = button('Удалить', 'trash-2');
   deleteButton.setAttribute('variant', 'danger');
-  const tabButton = button('Вкладка', 'plus', 'end');
-  const refreshButton = button('Обновить', 'refresh-cw', 'end');
   const hiddenSwitch = document.createElement('vui-switch') as VSwitch;
   hiddenSwitch.setAttribute('slot', 'end');
   hiddenSwitch.setAttribute('label', 'Скрытые файлы');
@@ -88,34 +105,24 @@ export function mountManager(): void {
 
   const pathInput = document.createElement('vui-input') as VInput;
   pathInput.id = 'path';
-  pathInput.setAttribute('label', 'Путь');
+  pathInput.setAttribute('label', '');
+  pathInput.setAttribute('aria-label', 'Адрес');
   pathInput.setAttribute('type', 'text');
-  toolbar.append(
-    backButton,
-    forwardButton,
-    upButton,
-    pathInput,
-    newButton,
-    renameButton,
-    copyButton,
-    moveButton,
-    deleteButton,
-    hiddenSwitch,
-    tabButton,
-    refreshButton,
-  );
+  pathInput.setAttribute('size', 'large');
+  navigate.append(backButton, forwardButton, upButton, refreshButton, pathInput);
+  commandBar.append(renameButton, copyButton, moveButton, deleteButton, hiddenSwitch);
 
   const nav = document.createElement('div');
   nav.setAttribute('slot', 'nav');
   nav.className = 'nav-block';
   const placesNav = document.createElement('vui-nav');
-  placesNav.setAttribute('label', 'Места');
+  placesNav.setAttribute('label', 'Быстрые ссылки');
   const rootsNav = document.createElement('vui-nav');
   rootsNav.setAttribute('label', 'Диски');
   const placesLabel = document.createElement('vui-text');
   placesLabel.setAttribute('variant', 'label');
   placesLabel.setAttribute('muted', '');
-  placesLabel.textContent = 'Места';
+  placesLabel.textContent = 'Быстрые ссылки';
   const rootsLabel = document.createElement('vui-text');
   rootsLabel.setAttribute('variant', 'label');
   rootsLabel.setAttribute('muted', '');
@@ -125,31 +132,52 @@ export function mountManager(): void {
   const stage = document.createElement('div');
   stage.className = 'stage';
   const tabs = document.createElement('vui-tabs');
+  tabs.setAttribute('slot', 'tabs');
   tabs.setAttribute('label', 'Вкладки');
+  const addTab = document.createElement('vui-icon-button');
+  addTab.setAttribute('slot', 'action');
+  addTab.setAttribute('name', 'plus');
+  addTab.setAttribute('label', 'Новая вкладка');
+  addTab.setAttribute('variant', 'ghost');
+  addTab.setAttribute('size', 'small');
+  tabs.append(addTab);
+  bar.append(tabs);
+  function makeGrid(label: string): VDataGrid {
+    const view = document.createElement('vui-data-grid') as VDataGrid;
+    view.setAttribute('label', label);
+    view.setAttribute('empty-label', 'Каталог пуст');
+    view.multiple = true;
+    view.fill = true;
+    view.columns = [
+      { key: 'name', title: 'Имя', iconKey: 'icon' },
+      { key: 'kind', title: 'Тип', priority: 'secondary' },
+      { key: 'size', title: 'Размер', align: 'end', priority: 'secondary' },
+      { key: 'modified', title: 'Изменён', priority: 'secondary' },
+    ];
+    return view;
+  }
+
   const trail = document.createElement('vui-breadcrumbs');
   trail.setAttribute('label', 'Путь');
-  const grid = document.createElement('vui-data-grid') as VDataGrid;
-  grid.setAttribute('label', 'Файлы');
-  grid.setAttribute('empty-label', 'Каталог пуст');
-  grid.multiple = true;
-  grid.fill = true;
-  grid.columns = [
-    { key: 'name', title: 'Имя', iconKey: 'icon' },
-    { key: 'kind', title: 'Тип', priority: 'secondary' },
-    { key: 'size', title: 'Размер', align: 'end', priority: 'secondary' },
-    { key: 'modified', title: 'Изменён', priority: 'secondary' },
-  ];
+  const grid = makeGrid('Файлы');
   const empty = document.createElement('vui-empty');
   empty.setAttribute('heading', 'Нет каталога');
   empty.setAttribute('label', 'Не удалось открыть расположение');
-  stage.append(tabs, trail, grid, empty);
+  stage.append(trail, grid, empty);
   empty.hidden = true;
+  stage.toggleAttribute('data-active', true);
 
-  const aside = document.createElement('div');
-  aside.setAttribute('slot', 'aside');
-  const properties = document.createElement('vui-properties');
-  properties.setAttribute('label', 'Свойства');
-  aside.append(properties);
+  const rightStage = document.createElement('div');
+  rightStage.className = 'stage';
+  rightStage.setAttribute('slot', 'aside');
+  const rightTrail = document.createElement('vui-breadcrumbs');
+  rightTrail.setAttribute('label', 'Путь второй панели');
+  const rightGrid = makeGrid('Вторая панель');
+  const rightEmpty = document.createElement('vui-empty');
+  rightEmpty.setAttribute('heading', 'Нет каталога');
+  rightEmpty.setAttribute('label', 'Не удалось открыть расположение');
+  rightStage.append(rightTrail, rightGrid, rightEmpty);
+  rightEmpty.hidden = true;
 
   const status = document.createElement('vui-status-bar');
   status.setAttribute('slot', 'footer');
@@ -185,12 +213,20 @@ export function mountManager(): void {
     fileMenu.append(item);
   }
 
-  shell.append(toolbar, nav, stage, status, dialog, fileMenu);
+  shell.append(navigate, commandBar, nav, stage, status, rightStage, dialog, fileMenu);
   app.append(shell);
+  shell.addEventListener('aside-toggle', (event) => {
+    const opening = event instanceof CustomEvent && event.detail?.opening === true;
+    if (!opening) return;
+    event.preventDefault();
+    void window.vortex.openSources('pane');
+  });
 
   const sessions: Session[] = [];
   let activeId = '';
   let page: DirectoryPage | null = null;
+  let side: 'left' | 'right' = 'left';
+  const right = { page: null as DirectoryPage | null, history: [] as string[], historyIndex: 0 };
   let showHidden = false;
   let busy = false;
 
@@ -208,27 +244,38 @@ export function mountManager(): void {
     return result.value;
   }
 
+  function currentPage(): DirectoryPage | null {
+    return side === 'right' ? right.page : page;
+  }
+
+  function currentGrid(): VDataGrid {
+    return side === 'right' ? rightGrid : grid;
+  }
+
   function selectedEntries(): FileEntry[] {
-    if (!page) return [];
-    const ids = new Set(grid.selectedIds);
-    return page.entries.filter((entry) => ids.has(entry.path));
+    const listing = currentPage();
+    if (!listing) return [];
+    const ids = new Set(currentGrid().selectedIds);
+    return listing.entries.filter((entry) => ids.has(entry.path));
   }
 
   function syncCommands(): void {
     const session = active();
     const local = session?.kind === 'local';
+    const onRight = side === 'right';
     const selected = selectedEntries();
-    backButton.disabled = !local || !session || session.historyIndex <= 0 || busy;
-    forwardButton.disabled = !local || !session || session.historyIndex >= session.history.length - 1 || busy;
-    upButton.disabled = !local || !page?.parent || busy;
+    backButton.disabled = busy || (onRight ? right.historyIndex <= 0 : !local || !session || session.historyIndex <= 0);
+    forwardButton.disabled = busy || (onRight
+      ? right.historyIndex >= right.history.length - 1
+      : !local || !session || session.historyIndex >= session.history.length - 1);
+    upButton.disabled = busy || (onRight ? !right.page?.parent : !local || !page?.parent);
     renameButton.disabled = !local || selected.length !== 1 || busy;
     copyButton.disabled = !local || selected.length === 0 || busy;
     moveButton.disabled = !local || selected.length === 0 || busy;
     deleteButton.disabled = !local || selected.length === 0 || busy;
-    newButton.disabled = busy || !local || !page;
-    refreshButton.disabled = busy || !local || !page;
+    refreshButton.disabled = busy || !currentPage() || (onRight ? false : !local);
     hiddenSwitch.disabled = busy || !local;
-    pathInput.disabled = !local;
+    pathInput.disabled = onRight ? !right.page : !local;
     const flags: Record<string, boolean> = {
       'file.open': Boolean(local && selected.length === 1 && !busy),
       'file.rename': !renameButton.disabled,
@@ -245,35 +292,49 @@ export function mountManager(): void {
     });
   }
 
+  function tabIcon(kind: Session['kind']): string {
+    if (kind === 'local') return 'folder';
+    if (kind === 'ssh') return 'terminal';
+    if (kind === 'ftp') return 'globe';
+    return 'server';
+  }
+
+  function fillTab(tab: HTMLElement, session: Session): void {
+    const icon = document.createElement('vui-icon');
+    icon.setAttribute('name', tabIcon(session.kind));
+    const label = document.createElement('span');
+    label.textContent = session.kind === 'local' ? pathTitle(session.path) : session.label;
+    tab.replaceChildren(icon, label);
+  }
+
   function renderTabs(): void {
     tabs.replaceChildren();
     for (const session of sessions) {
       const tab = document.createElement('vui-tab');
       tab.dataset.id = session.id;
-      tab.textContent = session.kind === 'local' ? pathTitle(session.path) : session.label;
+      fillTab(tab, session);
       tab.setAttribute('close-label', 'Закрыть');
       if (sessions.length > 1) tab.setAttribute('closable', '');
       if (session.id === activeId) tab.setAttribute('selected', '');
       tabs.append(tab);
     }
+    tabs.append(addTab);
   }
 
-  function renderTrail(target: string): void {
-    trail.replaceChildren();
+  function renderTrail(host: HTMLElement, target: string, follow: (path: string) => void): void {
+    host.replaceChildren();
     const items = crumbs(target);
     for (const [index, item] of items.entries()) {
       if (index === items.length - 1) {
         const current = document.createElement('vui-text');
         current.setAttribute('variant', 'label');
         current.textContent = item.label;
-        trail.append(current);
+        host.append(current);
         continue;
       }
       const link = button(item.label, 'folder', '');
-      link.addEventListener('click', () => {
-        void openDirectory(item.path, true);
-      });
-      trail.append(link);
+      link.addEventListener('click', () => follow(item.path));
+      host.append(link);
     }
   }
 
@@ -282,43 +343,22 @@ export function mountManager(): void {
     for (const place of places) {
       const item = document.createElement('vui-nav-item');
       item.setAttribute('data-path', place.path);
-      item.textContent = place.label;
+      const icon = document.createElement('vui-icon');
+      icon.setAttribute('name', placeIcon(place.id));
+      item.append(icon, place.label);
       if (place.path === current) item.setAttribute('selected', '');
       host.append(item);
     }
   }
 
-  function renderProperties(): void {
-    const selected = selectedEntries();
-    properties.replaceChildren();
-    if (selected.length === 0) {
-      aside.remove();
-      syncCommands();
-      return;
-    }
-    if (!aside.isConnected) shell.insertBefore(aside, status);
-    if (selected.length > 1) {
-      const count = document.createElement('vui-property');
-      count.setAttribute('label', 'Выбрано');
-      count.textContent = String(selected.length);
-      properties.append(count);
-      return;
-    }
-    const entry = selected[0];
-    if (!entry) return;
-    const rows: Array<[string, string]> = [
-      ['Имя', entry.name],
-      ['Тип', kindLabel(entry.kind)],
-      ['Размер', formatSize(entry.size, entry.kind) || '—'],
-      ['Изменён', formatModified(entry.modified) || '—'],
-      ['Путь', entry.path],
-    ];
-    for (const [label, value] of rows) {
-      const row = document.createElement('vui-property');
-      row.setAttribute('label', label);
-      row.textContent = value;
-      properties.append(row);
-    }
+  function focusSide(next: 'left' | 'right'): void {
+    side = next;
+    stage.toggleAttribute('data-active', next === 'left');
+    rightStage.toggleAttribute('data-active', next === 'right');
+    const listing = currentPage();
+    if (listing) pathInput.value = listing.path;
+    fileMenu.bindTo(currentGrid());
+    syncCommands();
   }
 
   function renderPage(next: DirectoryPage): void {
@@ -327,10 +367,14 @@ export function mountManager(): void {
     if (session) {
       session.path = next.path;
       const tab = tabs.querySelector(`vui-tab[data-id="${CSS.escape(session.id)}"]`);
-      if (tab) tab.textContent = pathTitle(next.path);
+      const label = tab?.querySelector('span');
+      if (label) label.textContent = pathTitle(next.path);
     }
-    pathInput.value = next.path;
-    renderTrail(next.path);
+    if (side === 'left') pathInput.value = next.path;
+    renderTrail(trail, next.path, (path) => {
+      focusSide('left');
+      void openDirectory(path, true);
+    });
     const rows: VDataGridRow[] = next.entries.map((entry) => ({
       id: entry.path,
       icon: iconFor(entry),
@@ -346,7 +390,32 @@ export function mountManager(): void {
     const hiddenCount = next.entries.filter((entry) => entry.hidden).length;
     statusMain.textContent = `${next.entries.length} объектов${hiddenCount ? `, скрытых ${hiddenCount}` : ''}`;
     statusEnd.textContent = next.path;
-    renderProperties();
+    syncCommands();
+  }
+
+  function renderSide(next: DirectoryPage): void {
+    right.page = next;
+    if (side === 'right') pathInput.value = next.path;
+    renderTrail(rightTrail, next.path, (path) => {
+      focusSide('right');
+      void openSide(path, true);
+    });
+    rightGrid.rows = next.entries.map((entry) => ({
+      id: entry.path,
+      icon: iconFor(entry),
+      name: entry.name,
+      kind: kindLabel(entry.kind),
+      size: formatSize(entry.size, entry.kind),
+      modified: formatModified(entry.modified),
+    }));
+    rightEmpty.hidden = true;
+    rightGrid.hidden = false;
+    rightTrail.hidden = false;
+    if (side === 'right') {
+      const hiddenCount = next.entries.filter((entry) => entry.hidden).length;
+      statusMain.textContent = `${next.entries.length} объектов${hiddenCount ? `, скрытых ${hiddenCount}` : ''}`;
+      statusEnd.textContent = next.path;
+    }
     syncCommands();
   }
 
@@ -364,20 +433,74 @@ export function mountManager(): void {
     pathInput.value = session.path;
     statusMain.textContent = session.label;
     statusEnd.textContent = `${session.user}@${session.host}:${session.port}`;
-    renderProperties();
     syncCommands();
   }
 
   function showError(message: string): void {
     statusMain.textContent = message;
-    empty.setAttribute('heading', 'Нет каталога');
-    empty.setAttribute('label', message);
-    empty.hidden = false;
-    grid.hidden = true;
+    const view = side === 'right' ? rightEmpty : empty;
+    const fileGrid = currentGrid();
+    view.setAttribute('heading', 'Нет каталога');
+    view.setAttribute('label', message);
+    view.hidden = false;
+    fileGrid.hidden = true;
     syncCommands();
   }
 
+  async function openInPane(source: SourceRequest): Promise<void> {
+    shell.removeAttribute('aside-collapsed');
+    right.history = [];
+    right.historyIndex = 0;
+    right.page = null;
+    focusSide('right');
+    if (source.kind !== 'local') {
+      rightGrid.rows = [];
+      rightGrid.hidden = true;
+      rightTrail.hidden = true;
+      rightEmpty.hidden = false;
+      rightEmpty.setAttribute('heading', source.label);
+      rightEmpty.setAttribute(
+        'label',
+        `Источник ${source.kind.toUpperCase()} выбран. Каталог этой версии открывается только локально, провайдер ${source.user}@${source.host}:${source.port} подключится отдельно.`,
+      );
+      pathInput.value = source.path;
+      statusMain.textContent = source.label;
+      statusEnd.textContent = `${source.user}@${source.host}:${source.port}`;
+      syncCommands();
+      return;
+    }
+    await openSide(source.path, true);
+  }
+
+  async function openSide(target: string, record: boolean): Promise<void> {
+    busy = true;
+    syncCommands();
+    if (side === 'right') statusMain.textContent = 'Чтение каталога…';
+    try {
+      const next = unwrap(await window.vortex.list(target, showHidden));
+      if (record && right.history[right.historyIndex] !== next.path) {
+        right.history.splice(right.historyIndex + 1);
+        right.history.push(next.path);
+        right.historyIndex = right.history.length - 1;
+      } else if (!right.history.length) {
+        right.history = [next.path];
+        right.historyIndex = 0;
+      }
+      renderSide(next);
+    } catch (error) {
+      focusSide('right');
+      showError(error instanceof Error ? error.message : 'Не удалось открыть каталог');
+    } finally {
+      busy = false;
+      syncCommands();
+    }
+  }
+
   async function openDirectory(target: string, record: boolean): Promise<void> {
+    if (side === 'right') {
+      await openSide(target, record);
+      return;
+    }
     const session = localSession();
     if (!session) return;
     busy = true;
@@ -402,11 +525,14 @@ export function mountManager(): void {
   async function showActive(): Promise<void> {
     const session = active();
     if (!session) return;
+    side = 'left';
     if (session.kind !== 'local') {
       showRemote(session);
+      focusSide('left');
       return;
     }
     await openDirectory(session.history[session.historyIndex] ?? session.path, false);
+    focusSide('left');
   }
 
   function addSession(request: SourceRequest): void {
@@ -423,8 +549,25 @@ export function mountManager(): void {
   }
 
   async function reload(): Promise<void> {
-    if (!page || !localSession()) return;
+    if (!localSession()) return;
+    if (side === 'right') {
+      if (right.page) await openSide(right.page.path, false);
+      return;
+    }
+    if (!page) return;
     await openDirectory(page.path, false);
+  }
+
+  async function reloadBoth(): Promise<void> {
+    const leftPath = page?.path;
+    const rightPath = right.page?.path;
+    const restore = side;
+    if (leftPath) {
+      side = 'left';
+      await openDirectory(leftPath, false);
+    }
+    if (rightPath && !shell.hasAttribute('aside-collapsed')) await openSide(rightPath, false);
+    focusSide(restore);
   }
 
   function ask(options: { title: string; label: string; value?: string; input: boolean; ok?: string }): Promise<string | null> {
@@ -467,7 +610,7 @@ export function mountManager(): void {
       busy = true;
       syncCommands();
       const changed = await action();
-      if (changed) await reload();
+      if (changed) await reloadBoth();
     } catch (error) {
       statusMain.textContent = error instanceof Error ? error.message : 'Операция не выполнена';
     } finally {
@@ -477,7 +620,8 @@ export function mountManager(): void {
   }
 
   async function activate(): Promise<void> {
-    const entry = page?.entries.find((item) => item.path === grid.selectedId);
+    const listing = currentPage();
+    const entry = listing?.entries.find((item) => item.path === currentGrid().selectedId);
     if (!entry) return;
     if (entry.kind === 'file' || entry.kind === 'other') {
       const result = await window.vortex.open(entry.path);
@@ -496,6 +640,13 @@ export function mountManager(): void {
     if (target) void openDirectory(target, true);
   });
   backButton.addEventListener('click', () => {
+    if (side === 'right') {
+      if (right.historyIndex <= 0) return;
+      right.historyIndex -= 1;
+      const target = right.history[right.historyIndex];
+      if (target) void openSide(target, false);
+      return;
+    }
     const session = localSession();
     if (!session || session.historyIndex <= 0) return;
     session.historyIndex -= 1;
@@ -503,6 +654,13 @@ export function mountManager(): void {
     if (target) void openDirectory(target, false);
   });
   forwardButton.addEventListener('click', () => {
+    if (side === 'right') {
+      if (right.historyIndex >= right.history.length - 1) return;
+      right.historyIndex += 1;
+      const target = right.history[right.historyIndex];
+      if (target) void openSide(target, false);
+      return;
+    }
     const session = localSession();
     if (!session || session.historyIndex >= session.history.length - 1) return;
     session.historyIndex += 1;
@@ -510,32 +668,24 @@ export function mountManager(): void {
     if (target) void openDirectory(target, false);
   });
   upButton.addEventListener('click', () => {
-    const parent = page ? parentPath(page.path) : null;
+    const listing = currentPage();
+    const parent = listing ? parentPath(listing.path) : null;
     if (parent) void openDirectory(parent, true);
   });
   refreshButton.addEventListener('click', () => {
     void reload();
   });
-  tabButton.addEventListener('click', () => {
-    void window.vortex.openSources();
+  addTab.addEventListener('click', () => {
+    void window.vortex.openSources('tab');
   });
   hiddenSwitch.addEventListener('change', () => {
     showHidden = hiddenSwitch.checked;
-    void reload();
+    void reloadBoth();
   });
   pathInput.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;
     const next = pathInput.value.trim();
     if (next) void openDirectory(next, true);
-  });
-  newButton.addEventListener('click', () => {
-    if (!page) return;
-    void runAction(async () => {
-      const name = await ask({ title: 'Новый каталог', label: 'Имя', input: true, value: 'Новый каталог' });
-      if (!name || !page) return false;
-      unwrap(await window.vortex.mkdir(page.path, name));
-      return true;
-    });
   });
   renameButton.addEventListener('click', () => {
     const entry = selectedEntries()[0];
@@ -549,9 +699,9 @@ export function mountManager(): void {
   });
   copyButton.addEventListener('click', () => {
     const entries = selectedEntries();
-    if (!entries.length || !page) return;
+    if (!entries.length || !currentPage()) return;
     void runAction(async () => {
-      const destination = await ask({ title: 'Копировать', label: 'Каталог назначения', input: true, value: page?.path ?? '' });
+      const destination = await ask({ title: 'Копировать', label: 'Каталог назначения', input: true, value: currentPage()?.path ?? '' });
       if (!destination) return false;
       unwrap(await window.vortex.copy(entries.map((entry) => entry.path), destination));
       return true;
@@ -559,9 +709,9 @@ export function mountManager(): void {
   });
   moveButton.addEventListener('click', () => {
     const entries = selectedEntries();
-    if (!entries.length || !page) return;
+    if (!entries.length || !currentPage()) return;
     void runAction(async () => {
-      const destination = await ask({ title: 'Переместить', label: 'Каталог назначения', input: true, value: page?.path ?? '' });
+      const destination = await ask({ title: 'Переместить', label: 'Каталог назначения', input: true, value: currentPage()?.path ?? '' });
       if (!destination) return false;
       unwrap(await window.vortex.move(entries.map((entry) => entry.path), destination));
       return true;
@@ -604,24 +754,33 @@ export function mountManager(): void {
     void showActive();
   });
 
-  grid.addEventListener('change', () => {
-    renderProperties();
-    const count = grid.selectedIds.length;
-    statusEnd.textContent = count ? `Выбрано: ${count}` : (page?.path ?? '');
-    syncCommands();
-  });
-  grid.addEventListener('dblclick', () => {
-    void activate();
-  });
-  grid.addEventListener(
-    'contextmenu',
-    (event) => {
-      const row = event.composedPath().find((node): node is HTMLElement => node instanceof HTMLElement && node.getAttribute('role') === 'row');
-      const id = row?.dataset.id;
-      if (id && !grid.selectedIds.includes(id)) grid.selectedIds = [id];
-    },
-    true,
-  );
+  function watchPane(view: VDataGrid, which: 'left' | 'right'): void {
+    view.addEventListener('pointerdown', () => focusSide(which));
+    view.addEventListener('change', () => {
+      if (side !== which) focusSide(which);
+      const count = view.selectedIds.length;
+      const listing = which === 'left' ? page : right.page;
+      statusEnd.textContent = count ? `Выбрано: ${count}` : (listing?.path ?? '');
+      syncCommands();
+    });
+    view.addEventListener('dblclick', () => {
+      focusSide(which);
+      void activate();
+    });
+    view.addEventListener(
+      'contextmenu',
+      (event) => {
+        focusSide(which);
+        const row = event.composedPath().find((node): node is HTMLElement => node instanceof HTMLElement && node.getAttribute('role') === 'row');
+        const id = row?.dataset.id;
+        if (id && !view.selectedIds.includes(id)) view.selectedIds = [id];
+      },
+      true,
+    );
+  }
+
+  watchPane(grid, 'left');
+  watchPane(rightGrid, 'right');
   fileMenu.bindTo(grid);
 
   const commands = new CommandRegistry();
@@ -643,7 +802,13 @@ export function mountManager(): void {
   shortcuts.register({ keys: 'Enter', command: 'file.open' });
   shortcuts.attach(window);
 
-  window.vortex.onSource((source) => addSession(source));
+  window.vortex.onSource((source: OpenedSource) => {
+    if (source.target === 'pane') {
+      void openInPane(source);
+      return;
+    }
+    addSession(source);
+  });
 
   void (async () => {
     try {

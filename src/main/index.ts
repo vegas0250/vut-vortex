@@ -1,11 +1,12 @@
 import { app, BrowserWindow, ipcMain, session, shell } from 'electron';
 import { fileURLToPath } from 'node:url';
-import { channels, type SourceKind, type SourceRequest } from '../shared/ipc';
+import { channels, type SourceKind, type SourceRequest, type SourceTarget } from '../shared/ipc';
 import { registerIpc } from './ipc';
 
 const devUrl = process.env.VUT_RENDERER_URL;
 let manager: BrowserWindow | null = null;
 let sourcesWindow: BrowserWindow | null = null;
+let sourceTarget: SourceTarget = 'tab';
 
 function installProductionPolicy(): void {
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -35,7 +36,7 @@ function createWindow(sources: boolean): BrowserWindow {
     show: false,
     frame: false,
     title: sources ? 'Источник' : 'Vortex',
-    backgroundColor: '#050a08',
+    backgroundColor: '#0e1411',
     webPreferences: {
       preload: fileURLToPath(new URL('../preload/index.cjs', import.meta.url)),
       contextIsolation: true,
@@ -82,7 +83,8 @@ function registerWindowIpc(): void {
   ipcMain.on(channels.close, (event) => {
     BrowserWindow.fromWebContents(event.sender)?.close();
   });
-  ipcMain.handle(channels.openSources, () => {
+  ipcMain.handle(channels.openSources, (_event, target: unknown) => {
+    sourceTarget = target === 'pane' ? 'pane' : 'tab';
     if (sourcesWindow && !sourcesWindow.isDestroyed()) {
       sourcesWindow.focus();
       return;
@@ -95,7 +97,7 @@ function registerWindowIpc(): void {
   ipcMain.on(channels.source, (event, value: unknown) => {
     const source = readSource(value);
     if (!source || !manager || manager.isDestroyed()) return;
-    manager.webContents.send(channels.source, source);
+    manager.webContents.send(channels.source, { ...source, target: sourceTarget });
     if (manager.isMinimized()) manager.restore();
     manager.focus();
     BrowserWindow.fromWebContents(event.sender)?.close();

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { channels, type Result, type SourceRequest } from '../shared/ipc';
+import { channels, type OpenedSource, type Result, type SourceRequest, type SourceTarget } from '../shared/ipc';
 import type { DirectoryPage, LocationIndex } from '../shared/files';
 
 const api = {
@@ -20,10 +20,10 @@ const api = {
   onMaximized: (listener: (maximized: boolean) => void): void => {
     ipcRenderer.on(channels.state, (_event, value: unknown) => listener(value === true));
   },
-  openSources: (): Promise<void> => ipcRenderer.invoke(channels.openSources),
+  openSources: (target: SourceTarget = 'tab'): Promise<void> => ipcRenderer.invoke(channels.openSources, target),
   chooseSource: (source: SourceRequest): void => ipcRenderer.send(channels.source, source),
-  onSource: (listener: (source: SourceRequest) => void): void => {
-    ipcRenderer.on(channels.source, (_event, value: SourceRequest) => listener(value));
+  onSource: (listener: (source: OpenedSource) => void): void => {
+    ipcRenderer.on(channels.source, (_event, value: OpenedSource) => listener(value));
   },
 };
 

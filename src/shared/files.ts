@@ -125,6 +125,15 @@ export function iconFor(entry: Pick<FileEntry, 'kind' | 'name'>): string {
   return 'file';
 }
 
+export function placeIcon(id: string): string {
+  if (id === 'home') return 'house';
+  if (id === 'desktop') return 'monitor';
+  if (id === 'documents') return 'file-text';
+  if (id === 'downloads') return 'download';
+  if (id === 'temporary') return 'clock';
+  return 'hard-drive';
+}
+
 export function pathTitle(target: string): string {
   const trimmed = target.replace(/[\\/]+$/, '');
   const parts = trimmed.split(/[\\/]/).filter(Boolean);

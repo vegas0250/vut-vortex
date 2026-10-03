@@ -12,8 +12,7 @@ body,
   min-height: 0;
 }
 
-vui-titlebar,
-vui-tabs {
+vui-titlebar {
   flex: 0 0 auto;
 }
 
@@ -36,9 +35,14 @@ vui-shell {
   min-height: 0;
 }
 
+.stage[data-active] {
+  box-shadow: inset 0 2px 0 var(--vui-color-primary);
+}
+
 .nav-block {
   display: flex;
   flex-direction: column;
+  gap: var(--vui-space-md);
   min-width: 0;
   min-height: 0;
 }

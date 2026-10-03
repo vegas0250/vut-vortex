@@ -17,6 +17,8 @@ export const channels = {
 
 export type SourceKind = 'local' | 'ssh' | 'sftp' | 'ftp';
 
+export type SourceTarget = 'tab' | 'pane';
+
 export interface SourceRequest {
   kind: SourceKind;
   label: string;
@@ -24,6 +26,10 @@ export interface SourceRequest {
   host: string;
   port: number;
   user: string;
+}
+
+export interface OpenedSource extends SourceRequest {
+  target: SourceTarget;
 }
 
 export type Result<T> = { ok: true; value: T } | { ok: false; message: string };
