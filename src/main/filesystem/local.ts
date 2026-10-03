@@ -59,6 +59,10 @@ function containedBy(parent: string, child: string): boolean {
 }
 
 export async function listDirectory(input: unknown, showHidden: boolean): Promise<DirectoryPage> {
+  if (typeof input === 'string') {
+    const special = await platform().specialList(input, showHidden);
+    if (special) return special;
+  }
   const directory = absolutePath(input);
   const info = await lstat(directory);
   if (!info.isDirectory() && !info.isSymbolicLink()) throw new Error('Это не каталог');

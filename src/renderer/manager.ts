@@ -9,7 +9,6 @@ import 'vui/breadcrumbs';
 import 'vui/text';
 import 'vui/nav';
 import 'vui/empty';
-import 'vui/switch';
 import 'vui/tabs';
 import 'vui/menu';
 import 'vui/icon';
@@ -21,10 +20,10 @@ import type { VDataGrid, VDataGridRow } from 'vui/data-grid';
 import type { VDialog } from 'vui/dialog';
 import type { VInput } from 'vui/input';
 import type { VMenu, VMenuItem } from 'vui/menu';
-import type { VSwitch } from 'vui/switch';
 import { mountChrome, restoreTheme } from './chrome';
 import {
   crumbs,
+  displayName,
   formatModified,
   formatSize,
   iconFor,
@@ -60,9 +59,6 @@ export function mountManager(): void {
   shell.setAttribute('aside-expand-label', 'Открыть панель');
   shell.setAttribute('aside-collapse-label', 'Закрыть панель');
 
-  const navigate = document.createElement('vui-toolbar');
-  navigate.setAttribute('slot', 'header');
-  navigate.setAttribute('label', 'Навигация');
   const commandBar = document.createElement('vui-toolbar');
   commandBar.setAttribute('slot', 'toolbar');
   commandBar.setAttribute('label', 'Команды');
@@ -89,28 +85,48 @@ export function mountManager(): void {
     return element;
   }
 
-  const backButton = iconButton('Назад', 'arrow-left');
-  const forwardButton = iconButton('Вперёд', 'arrow-right');
-  const upButton = iconButton('Вверх', 'arrow-up');
-  const refreshButton = iconButton('Обновить', 'refresh-cw');
+  interface PaneNav {
+    back: VIconButton;
+    forward: VIconButton;
+    up: VIconButton;
+    refresh: VIconButton;
+    path: VInput;
+    bar: HTMLElement;
+  }
+
+  function makePaneNav(label: string): PaneNav {
+    const bar = document.createElement('vui-toolbar');
+    bar.setAttribute('label', label);
+    const back = iconButton('Назад', 'arrow-left');
+    const forward = iconButton('Вперёд', 'arrow-right');
+    const up = iconButton('Вверх', 'arrow-up');
+    const refresh = iconButton('Обновить', 'refresh-cw');
+    const pathBox = document.createElement('vui-input') as VInput;
+    pathBox.setAttribute('label', '');
+    pathBox.setAttribute('aria-label', 'Адрес');
+    pathBox.setAttribute('type', 'text');
+    pathBox.setAttribute('size', 'large');
+    bar.append(back, forward, up, refresh, pathBox);
+    return { back, forward, up, refresh, path: pathBox, bar };
+  }
+
+  const leftNav = makePaneNav('Навигация');
+  const rightNav = makePaneNav('Навигация второй панели');
   const renameButton = button('Переименовать', 'pencil');
   const copyButton = button('Копировать', 'copy');
   const moveButton = button('Переместить', 'folder');
   const deleteButton = button('Удалить', 'trash-2');
   deleteButton.setAttribute('variant', 'danger');
-  const hiddenSwitch = document.createElement('vui-switch') as VSwitch;
-  hiddenSwitch.setAttribute('slot', 'end');
-  hiddenSwitch.setAttribute('label', 'Скрытые файлы');
-  hiddenSwitch.textContent = 'Скрытые';
-
-  const pathInput = document.createElement('vui-input') as VInput;
-  pathInput.id = 'path';
-  pathInput.setAttribute('label', '');
-  pathInput.setAttribute('aria-label', 'Адрес');
-  pathInput.setAttribute('type', 'text');
-  pathInput.setAttribute('size', 'large');
-  navigate.append(backButton, forwardButton, upButton, refreshButton, pathInput);
-  commandBar.append(renameButton, copyButton, moveButton, deleteButton, hiddenSwitch);
+  const viewButton = button('Показать', 'eye', 'end');
+  const viewMenu = document.createElement('vui-menu') as VMenu;
+  viewMenu.setAttribute('label', 'Показать');
+  const hiddenItem = document.createElement('vui-menu-item');
+  hiddenItem.setAttribute('label', 'Скрытые');
+  const extensionItem = document.createElement('vui-menu-item');
+  extensionItem.setAttribute('label', 'Расширения файлов');
+  extensionItem.setAttribute('checked', '');
+  viewMenu.append(hiddenItem, extensionItem);
+  commandBar.append(renameButton, copyButton, moveButton, deleteButton, viewButton);
 
   const nav = document.createElement('div');
   nav.setAttribute('slot', 'nav');
@@ -163,7 +179,7 @@ export function mountManager(): void {
   const empty = document.createElement('vui-empty');
   empty.setAttribute('heading', 'Нет каталога');
   empty.setAttribute('label', 'Не удалось открыть расположение');
-  stage.append(trail, grid, empty);
+  stage.append(leftNav.bar, trail, grid, empty);
   empty.hidden = true;
   stage.toggleAttribute('data-active', true);
 
@@ -176,7 +192,7 @@ export function mountManager(): void {
   const rightEmpty = document.createElement('vui-empty');
   rightEmpty.setAttribute('heading', 'Нет каталога');
   rightEmpty.setAttribute('label', 'Не удалось открыть расположение');
-  rightStage.append(rightTrail, rightGrid, rightEmpty);
+  rightStage.append(rightNav.bar, rightTrail, rightGrid, rightEmpty);
   rightEmpty.hidden = true;
 
   const status = document.createElement('vui-status-bar');
@@ -213,7 +229,8 @@ export function mountManager(): void {
     fileMenu.append(item);
   }
 
-  shell.append(navigate, commandBar, nav, stage, status, rightStage, dialog, fileMenu);
+  shell.append(commandBar, nav, stage, status, rightStage, dialog, fileMenu);
+  document.body.append(viewMenu);
   app.append(shell);
   shell.addEventListener('aside-toggle', (event) => {
     const opening = event instanceof CustomEvent && event.detail?.opening === true;
@@ -228,6 +245,7 @@ export function mountManager(): void {
   let side: 'left' | 'right' = 'left';
   const right = { page: null as DirectoryPage | null, history: [] as string[], historyIndex: 0 };
   let showHidden = false;
+  let showExtensions = true;
   let busy = false;
 
   function active(): Session | undefined {
@@ -262,20 +280,22 @@ export function mountManager(): void {
   function syncCommands(): void {
     const session = active();
     const local = session?.kind === 'local';
-    const onRight = side === 'right';
     const selected = selectedEntries();
-    backButton.disabled = busy || (onRight ? right.historyIndex <= 0 : !local || !session || session.historyIndex <= 0);
-    forwardButton.disabled = busy || (onRight
-      ? right.historyIndex >= right.history.length - 1
-      : !local || !session || session.historyIndex >= session.history.length - 1);
-    upButton.disabled = busy || (onRight ? !right.page?.parent : !local || !page?.parent);
+    leftNav.back.disabled = busy || !local || !session || session.historyIndex <= 0;
+    leftNav.forward.disabled = busy || !local || !session || session.historyIndex >= session.history.length - 1;
+    leftNav.up.disabled = busy || !local || !page?.parent;
+    leftNav.refresh.disabled = busy || !local || !page;
+    leftNav.path.disabled = !local;
+    rightNav.back.disabled = busy || right.historyIndex <= 0;
+    rightNav.forward.disabled = busy || right.historyIndex >= right.history.length - 1;
+    rightNav.up.disabled = busy || !right.page?.parent;
+    rightNav.refresh.disabled = busy || !right.page;
+    rightNav.path.disabled = !right.page;
+    viewButton.disabled = busy || !local;
     renameButton.disabled = !local || selected.length !== 1 || busy;
     copyButton.disabled = !local || selected.length === 0 || busy;
     moveButton.disabled = !local || selected.length === 0 || busy;
     deleteButton.disabled = !local || selected.length === 0 || busy;
-    refreshButton.disabled = busy || !currentPage() || (onRight ? false : !local);
-    hiddenSwitch.disabled = busy || !local;
-    pathInput.disabled = onRight ? !right.page : !local;
     const flags: Record<string, boolean> = {
       'file.open': Boolean(local && selected.length === 1 && !busy),
       'file.rename': !renameButton.disabled,
@@ -356,7 +376,8 @@ export function mountManager(): void {
     stage.toggleAttribute('data-active', next === 'left');
     rightStage.toggleAttribute('data-active', next === 'right');
     const listing = currentPage();
-    if (listing) pathInput.value = listing.path;
+    const field = side === 'right' ? rightNav.path : leftNav.path;
+    if (listing) field.value = listing.path;
     fileMenu.bindTo(currentGrid());
     syncCommands();
   }
@@ -370,7 +391,7 @@ export function mountManager(): void {
       const label = tab?.querySelector('span');
       if (label) label.textContent = pathTitle(next.path);
     }
-    if (side === 'left') pathInput.value = next.path;
+    leftNav.path.value = next.path;
     renderTrail(trail, next.path, (path) => {
       focusSide('left');
       void openDirectory(path, true);
@@ -378,7 +399,7 @@ export function mountManager(): void {
     const rows: VDataGridRow[] = next.entries.map((entry) => ({
       id: entry.path,
       icon: iconFor(entry),
-      name: entry.name,
+      name: displayName(entry.name, entry.kind, showExtensions),
       kind: kindLabel(entry.kind),
       size: formatSize(entry.size, entry.kind),
       modified: formatModified(entry.modified),
@@ -395,7 +416,7 @@ export function mountManager(): void {
 
   function renderSide(next: DirectoryPage): void {
     right.page = next;
-    if (side === 'right') pathInput.value = next.path;
+    rightNav.path.value = next.path;
     renderTrail(rightTrail, next.path, (path) => {
       focusSide('right');
       void openSide(path, true);
@@ -403,7 +424,7 @@ export function mountManager(): void {
     rightGrid.rows = next.entries.map((entry) => ({
       id: entry.path,
       icon: iconFor(entry),
-      name: entry.name,
+      name: displayName(entry.name, entry.kind, showExtensions),
       kind: kindLabel(entry.kind),
       size: formatSize(entry.size, entry.kind),
       modified: formatModified(entry.modified),
@@ -430,7 +451,7 @@ export function mountManager(): void {
       'label',
       `Источник ${session.kind.toUpperCase()} выбран. Каталог этой версии открывается только локально, провайдер ${session.user}@${session.host}:${session.port} подключится отдельно.`,
     );
-    pathInput.value = session.path;
+    leftNav.path.value = session.path;
     statusMain.textContent = session.label;
     statusEnd.textContent = `${session.user}@${session.host}:${session.port}`;
     syncCommands();
@@ -463,7 +484,7 @@ export function mountManager(): void {
         'label',
         `Источник ${source.kind.toUpperCase()} выбран. Каталог этой версии открывается только локально, провайдер ${source.user}@${source.host}:${source.port} подключится отдельно.`,
       );
-      pathInput.value = source.path;
+      rightNav.path.value = source.path;
       statusMain.textContent = source.label;
       statusEnd.textContent = `${source.user}@${source.host}:${source.port}`;
       syncCommands();
@@ -639,53 +660,76 @@ export function mountManager(): void {
     const target = rootsNav.querySelector('[selected]')?.getAttribute('data-path');
     if (target) void openDirectory(target, true);
   });
-  backButton.addEventListener('click', () => {
-    if (side === 'right') {
-      if (right.historyIndex <= 0) return;
-      right.historyIndex -= 1;
-      const target = right.history[right.historyIndex];
-      if (target) void openSide(target, false);
-      return;
-    }
-    const session = localSession();
-    if (!session || session.historyIndex <= 0) return;
-    session.historyIndex -= 1;
-    const target = session.history[session.historyIndex];
-    if (target) void openDirectory(target, false);
-  });
-  forwardButton.addEventListener('click', () => {
-    if (side === 'right') {
-      if (right.historyIndex >= right.history.length - 1) return;
-      right.historyIndex += 1;
-      const target = right.history[right.historyIndex];
-      if (target) void openSide(target, false);
-      return;
-    }
-    const session = localSession();
-    if (!session || session.historyIndex >= session.history.length - 1) return;
-    session.historyIndex += 1;
-    const target = session.history[session.historyIndex];
-    if (target) void openDirectory(target, false);
-  });
-  upButton.addEventListener('click', () => {
-    const listing = currentPage();
-    const parent = listing ? parentPath(listing.path) : null;
-    if (parent) void openDirectory(parent, true);
-  });
-  refreshButton.addEventListener('click', () => {
-    void reload();
-  });
+  function bindNav(nav: PaneNav, which: 'left' | 'right'): void {
+    nav.back.addEventListener('click', () => {
+      focusSide(which);
+      if (which === 'right') {
+        if (right.historyIndex <= 0) return;
+        right.historyIndex -= 1;
+        const target = right.history[right.historyIndex];
+        if (target) void openSide(target, false);
+        return;
+      }
+      const session = localSession();
+      if (!session || session.historyIndex <= 0) return;
+      session.historyIndex -= 1;
+      const target = session.history[session.historyIndex];
+      if (target) void openDirectory(target, false);
+    });
+    nav.forward.addEventListener('click', () => {
+      focusSide(which);
+      if (which === 'right') {
+        if (right.historyIndex >= right.history.length - 1) return;
+        right.historyIndex += 1;
+        const target = right.history[right.historyIndex];
+        if (target) void openSide(target, false);
+        return;
+      }
+      const session = localSession();
+      if (!session || session.historyIndex >= session.history.length - 1) return;
+      session.historyIndex += 1;
+      const target = session.history[session.historyIndex];
+      if (target) void openDirectory(target, false);
+    });
+    nav.up.addEventListener('click', () => {
+      focusSide(which);
+      const listing = which === 'right' ? right.page : page;
+      const parent = listing ? parentPath(listing.path) : null;
+      if (parent) void openDirectory(parent, true);
+    });
+    nav.refresh.addEventListener('click', () => {
+      focusSide(which);
+      void reload();
+    });
+    nav.path.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      focusSide(which);
+      const next = nav.path.value.trim();
+      if (next) void openDirectory(next, true);
+    });
+  }
+
+  bindNav(leftNav, 'left');
+  bindNav(rightNav, 'right');
   addTab.addEventListener('click', () => {
     void window.vortex.openSources('tab');
   });
-  hiddenSwitch.addEventListener('change', () => {
-    showHidden = hiddenSwitch.checked;
+  viewButton.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    hiddenItem.toggleAttribute('checked', showHidden);
+    extensionItem.toggleAttribute('checked', showExtensions);
+    const rect = viewButton.getBoundingClientRect();
+    window.setTimeout(() => viewMenu.showAt(rect.left, rect.bottom), 0);
+  });
+  hiddenItem.addEventListener('click', () => {
+    showHidden = !showHidden;
     void reloadBoth();
   });
-  pathInput.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter') return;
-    const next = pathInput.value.trim();
-    if (next) void openDirectory(next, true);
+  extensionItem.addEventListener('click', () => {
+    showExtensions = !showExtensions;
+    if (page) renderPage(page);
+    if (right.page) renderSide(right.page);
   });
   renameButton.addEventListener('click', () => {
     const entry = selectedEntries()[0];
@@ -786,9 +830,9 @@ export function mountManager(): void {
   const commands = new CommandRegistry();
   const shortcuts = new ShortcutRegistry(commands);
   fileMenu.commands = commands;
-  commands.register({ id: 'go.back', label: 'Назад', execute: () => backButton.click() });
-  commands.register({ id: 'go.forward', label: 'Вперёд', execute: () => forwardButton.click() });
-  commands.register({ id: 'go.up', label: 'Вверх', execute: () => upButton.click() });
+  commands.register({ id: 'go.back', label: 'Назад', execute: () => (side === 'right' ? rightNav : leftNav).back.click() });
+  commands.register({ id: 'go.forward', label: 'Вперёд', execute: () => (side === 'right' ? rightNav : leftNav).forward.click() });
+  commands.register({ id: 'go.up', label: 'Вверх', execute: () => (side === 'right' ? rightNav : leftNav).up.click() });
   commands.register({ id: 'file.rename', label: 'Переименовать', execute: () => renameButton.click() });
   commands.register({ id: 'file.copy', label: 'Копировать', execute: () => copyButton.click() });
   commands.register({ id: 'file.move', label: 'Переместить', execute: () => moveButton.click() });

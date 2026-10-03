@@ -40,6 +40,12 @@ export function parentPath(target: string): string | null {
   const trimmed = target.replace(/[\\/]+$/, '');
   if (!trimmed || trimmed === '/' || /^[A-Za-z]:$/.test(trimmed)) return null;
   const index = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  if (trimmed.startsWith('\\\\')) {
+    const body = trimmed.slice(2);
+    const slash = body.indexOf('\\');
+    if (slash < 0) return '\\\\';
+    return `\\\\${body.slice(0, slash)}`;
+  }
   if (index < 0) return null;
   if (index === 0) return '/';
   const parent = trimmed.slice(0, index);
@@ -48,6 +54,16 @@ export function parentPath(target: string): string | null {
 }
 
 export function crumbs(target: string): Crumb[] {
+  if (target.startsWith('\\\\')) {
+    const parts = target.replace(/^[\\]+/, '').replace(/[\\]+$/, '').split('\\').filter(Boolean);
+    const items: Crumb[] = [{ label: 'Сеть', path: '\\\\' }];
+    let current = '\\\\';
+    for (const part of parts) {
+      current = current === '\\\\' ? `\\\\${part}` : `${current}\\${part}`;
+      items.push({ label: part, path: current });
+    }
+    return items;
+  }
   const separator = separatorOf(target);
   const rootMatch = target.match(/^[A-Za-z]:\\/) ?? (target.startsWith('/') ? ['/'] : null);
   const root = rootMatch ? rootMatch[0] : '';
@@ -99,6 +115,13 @@ export function formatModified(modified: number | null): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(modified);
 }
 
+export function displayName(name: string, kind: FileKind, showExtension: boolean): string {
+  if (showExtension || kind === 'directory' || kind === 'symlink') return name;
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) return name;
+  return name.slice(0, dot);
+}
+
 export function kindLabel(kind: FileKind): string {
   if (kind === 'directory') return 'Каталог';
   if (kind === 'symlink') return 'Ссылка';
@@ -131,6 +154,11 @@ export function placeIcon(id: string): string {
   if (id === 'documents') return 'file-text';
   if (id === 'downloads') return 'download';
   if (id === 'temporary') return 'clock';
+  if (id === 'pictures') return 'file-image';
+  if (id === 'music') return 'file-audio';
+  if (id === 'videos') return 'file-play';
+  if (id === 'network') return 'globe';
+  if (id.startsWith('wsl')) return 'terminal';
   return 'hard-drive';
 }
 

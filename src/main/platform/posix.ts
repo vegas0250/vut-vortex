@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import path from 'node:path';
-import type { Place } from '../../shared/files';
-import type { KnownPlaces, PlatformAdapter } from './types';
+import type { DirectoryPage, Place } from '../../shared/files';
+import type { PlatformAdapter } from './types';
 
 function existing(candidate: string): string | null {
   try {
@@ -41,6 +41,16 @@ function place(id: string, label: string, target: string | null): Place | null {
   return { id, label, path: target };
 }
 
+const namedDirs: Array<[string, string, string]> = [
+  ['XDG_DESKTOP_DIR', 'desktop', 'Рабочий стол'],
+  ['XDG_DOCUMENTS_DIR', 'documents', 'Документы'],
+  ['XDG_DOWNLOAD_DIR', 'downloads', 'Загрузки'],
+  ['XDG_PICTURES_DIR', 'pictures', 'Изображения'],
+  ['XDG_MUSIC_DIR', 'music', 'Музыка'],
+  ['XDG_VIDEOS_DIR', 'videos', 'Видео'],
+  ['XDG_PUBLICSHARE_DIR', 'public', 'Общие'],
+];
+
 export const posixPlatform: PlatformAdapter = {
   id: 'linux',
   isHiddenName(name: string): boolean {
@@ -52,26 +62,30 @@ export const posixPlatform: PlatformAdapter = {
   roots(): Promise<Place[]> {
     return Promise.resolve([{ id: 'root', label: 'Корень', path: '/' }]);
   },
-  places(): KnownPlaces {
+  specialList(): Promise<DirectoryPage | null> {
+    return Promise.resolve(null);
+  },
+  async quickLinks(): Promise<Place[]> {
     const home = homedir();
     const dirs = userDirs(home);
-    return {
-      home,
-      desktop: existing(dirs.get('XDG_DESKTOP_DIR') ?? path.join(home, 'Desktop')),
-      documents: existing(dirs.get('XDG_DOCUMENTS_DIR') ?? path.join(home, 'Documents')),
-      downloads: existing(dirs.get('XDG_DOWNLOAD_DIR') ?? path.join(home, 'Downloads')),
-      temporary: tmpdir(),
+    const fallback: Record<string, string> = {
+      XDG_DESKTOP_DIR: path.join(home, 'Desktop'),
+      XDG_DOCUMENTS_DIR: path.join(home, 'Documents'),
+      XDG_DOWNLOAD_DIR: path.join(home, 'Downloads'),
+      XDG_PICTURES_DIR: path.join(home, 'Pictures'),
+      XDG_MUSIC_DIR: path.join(home, 'Music'),
+      XDG_VIDEOS_DIR: path.join(home, 'Videos'),
+      XDG_PUBLICSHARE_DIR: path.join(home, 'Public'),
     };
+    const links: Place[] = [place('home', 'Домой', home)].filter((item): item is Place => item !== null);
+    for (const [key, id, label] of namedDirs) {
+      const found = place(id, label, existing(dirs.get(key) ?? fallback[key] ?? null));
+      if (found && found.path !== home) links.push(found);
+    }
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    const network = uid === null ? null : existing(path.join('/run/user', String(uid), 'gvfs'));
+    const share = place('network', 'Сеть', network);
+    if (share) links.push(share);
+    return links;
   },
 };
-
-export function linuxPlaces(adapter: PlatformAdapter = posixPlatform): Place[] {
-  const known = adapter.places();
-  return [
-    place('home', 'Домой', known.home),
-    place('desktop', 'Рабочий стол', known.desktop),
-    place('documents', 'Документы', known.documents),
-    place('downloads', 'Загрузки', known.downloads),
-    place('temporary', 'Временные', known.temporary),
-  ].filter((item): item is Place => item !== null);
-}

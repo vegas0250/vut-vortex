@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { copyPaths, createDirectory, listDirectory, movePaths, removePaths, renamePath } from '../src/main/filesystem/local';
-import { crumbs, formatSize, parentPath, singleSegment, sortEntries, type FileEntry } from '../src/shared/files';
+import { crumbs, displayName, formatSize, parentPath, singleSegment, sortEntries, type FileEntry } from '../src/shared/files';
+import { expandEnv, parseNetView, parseRegistryValues } from '../src/main/platform/windows';
 
 describe('paths', () => {
   it('walks parents and crumbs without treating a root as a child', () => {
@@ -13,6 +14,23 @@ describe('paths', () => {
     expect(parentPath('C:\\Users')).toBe('C:\\');
     expect(crumbs('/home/vegas').map((item) => item.path)).toEqual(['/', '/home', '/home/vegas']);
     expect(crumbs('C:\\Users\\vegas').map((item) => item.label)).toEqual(['C:\\', 'Users', 'vegas']);
+    expect(parentPath('\\\\host\\share')).toBe('\\\\host');
+    expect(parentPath('\\\\host')).toBe('\\\\');
+    expect(crumbs('\\\\host\\share').map((item) => item.path)).toEqual(['\\\\', '\\\\host', '\\\\host\\share']);
+    expect(displayName('note.txt', 'file', false)).toBe('note');
+    expect(displayName('archive.tar.gz', 'file', false)).toBe('archive.tar');
+    expect(displayName('.secret', 'file', false)).toBe('.secret');
+    expect(displayName('dir', 'directory', false)).toBe('dir');
+  });
+
+  it('reads Windows shell folders, network hosts, and expanded paths', () => {
+    expect(expandEnv('%USERPROFILE%\\Desktop', { USERPROFILE: 'C:\\Users\\vegas' })).toBe('C:\\Users\\vegas\\Desktop');
+    const folders = parseRegistryValues(
+      'HKEY_CURRENT_USER\\Software\n    Desktop    REG_EXPAND_SZ    %USERPROFILE%\\Desktop\n    Personal    REG_SZ    D:\\Docs\n',
+    );
+    expect(folders.get('Desktop')).toBe('%USERPROFILE%\\Desktop');
+    expect(folders.get('Personal')).toBe('D:\\Docs');
+    expect(parseNetView('Server Name\n-------------------------------------------------------------------------------\n\\\\OFFICE    Files\nThe command completed successfully.\n')).toEqual(['OFFICE']);
   });
 
   it('rejects path segments and sorts directories first', () => {

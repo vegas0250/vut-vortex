@@ -52,7 +52,6 @@ vui-data-grid {
   min-height: 0;
 }
 
-#path {
-  flex: 1 1 auto;
-  min-width: 8rem;
+.stage > vui-toolbar {
+  flex: 0 0 auto;
 }
