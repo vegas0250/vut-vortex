@@ -21,6 +21,8 @@ pnpm install
 pnpm dev
 ```
 
+pnpm 10 не запускает установочный скрипт Electron. Если после установки нет `node_modules/electron/dist`, один раз выполните `node node_modules/electron/install.js`.
+
 `pnpm dev` собирает main и preload, поднимает Vite для renderer и открывает Electron.
 
 Проверки:
