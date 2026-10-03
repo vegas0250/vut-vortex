@@ -1,0 +1,25 @@
+appId: vegas.vut.vortex
+productName: Vortex
+asar: true
+beforeBuild: ./scripts/before-build.cjs
+directories:
+  output: release
+files:
+  - dist/**
+  - package.json
+  - "!**/*.map"
+  - "!**/*.ts"
+  - "!**/*.md"
+linux:
+  target:
+    - target: tar.gz
+      arch:
+        - x64
+  category: Utility
+  artifactName: ${productName}-${version}-linux-${arch}.${ext}
+win:
+  target:
+    - target: zip
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-win-${arch}.${ext}

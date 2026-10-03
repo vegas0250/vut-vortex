@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "lib": ["ES2022", "DOM"],
+    "types": ["node", "vite/client"],
+    "useDefineForClassFields": false
+  },
+  "include": ["src", "tests", "vite.config.ts", "vite.main.config.ts", "vite.preload.config.ts"]
+}

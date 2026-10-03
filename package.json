@@ -1,0 +1,40 @@
+{
+  "name": "vut-vortex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vortex — универсальное рабочее окружение VUT. Первый слой: файловый менеджер.",
+  "type": "module",
+  "main": "dist/main/index.cjs",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/vegas0250/vut-vortex.git"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "package": "pnpm build && electron-builder --win zip --x64 --linux tar.gz --x64",
+    "package:win": "pnpm build && electron-builder --win zip --x64",
+    "package:linux": "pnpm build && electron-builder --linux tar.gz --x64"
+  },
+  "dependencies": {
+    "vui": "file:../vui"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.12",
+    "vitest": "^3.2.4",
+    "@types/node": "^24.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["electron", "esbuild", "electron-winstaller"]
+  }
+}
