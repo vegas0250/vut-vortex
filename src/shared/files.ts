@@ -105,3 +105,28 @@ export function kindLabel(kind: FileKind): string {
   if (kind === 'file') return 'Файл';
   return 'Объект';
 }
+
+const imageExt = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+const audioExt = new Set(['mp3', 'wav', 'flac', 'ogg', 'm4a', 'aac']);
+const videoExt = new Set(['mp4', 'mkv', 'webm', 'mov', 'avi']);
+const archiveExt = new Set(['zip', '7z', 'tar', 'gz', 'tgz', 'rar', 'bz2', 'xz']);
+const textExt = new Set(['txt', 'md', 'json', 'log', 'csv', 'xml', 'yml', 'yaml', 'ini']);
+const codeExt = new Set(['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'go', 'rs', 'css', 'html', 'vue']);
+
+export function iconFor(entry: Pick<FileEntry, 'kind' | 'name'>): string {
+  if (entry.kind === 'directory') return 'folder';
+  const ext = entry.name.includes('.') ? (entry.name.split('.').pop() ?? '').toLowerCase() : '';
+  if (imageExt.has(ext)) return 'file-image';
+  if (audioExt.has(ext)) return 'file-audio';
+  if (videoExt.has(ext)) return 'file-play';
+  if (archiveExt.has(ext)) return 'file-archive';
+  if (codeExt.has(ext)) return 'file-code';
+  if (textExt.has(ext)) return 'file-text';
+  return 'file';
+}
+
+export function pathTitle(target: string): string {
+  const trimmed = target.replace(/[\\/]+$/, '');
+  const parts = trimmed.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? target;
+}

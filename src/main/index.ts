@@ -1,12 +1,11 @@
-import { app, BrowserWindow, nativeTheme, session, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, session, shell } from 'electron';
 import { fileURLToPath } from 'node:url';
+import { channels, type SourceKind, type SourceRequest } from '../shared/ipc';
 import { registerIpc } from './ipc';
 
 const devUrl = process.env.VUT_RENDERER_URL;
-
-function flashColor(): string {
-  return nativeTheme.shouldUseDarkColors ? '#1b1b1b' : '#f4f4f4';
-}
+let manager: BrowserWindow | null = null;
+let sourcesWindow: BrowserWindow | null = null;
 
 function installProductionPolicy(): void {
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -18,15 +17,25 @@ function installProductionPolicy(): void {
   });
 }
 
-function createWindow(): BrowserWindow {
+function load(win: BrowserWindow, sources: boolean): void {
+  if (devUrl) {
+    void win.loadURL(sources ? `${devUrl}#sources` : devUrl);
+    return;
+  }
+  const file = fileURLToPath(new URL('../renderer/index.html', import.meta.url));
+  void win.loadFile(file, sources ? { hash: 'sources' } : undefined);
+}
+
+function createWindow(sources: boolean): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1120,
-    height: 740,
-    minWidth: 720,
-    minHeight: 480,
+    width: sources ? 760 : 1120,
+    height: sources ? 560 : 740,
+    minWidth: sources ? 640 : 720,
+    minHeight: sources ? 420 : 480,
     show: false,
-    title: 'Vortex',
-    backgroundColor: flashColor(),
+    frame: false,
+    title: sources ? 'Источник' : 'Vortex',
+    backgroundColor: '#050a08',
     webPreferences: {
       preload: fileURLToPath(new URL('../preload/index.cjs', import.meta.url)),
       contextIsolation: true,
@@ -36,32 +45,79 @@ function createWindow(): BrowserWindow {
     },
   });
   win.once('ready-to-show', () => win.show());
+  win.on('maximize', () => win.webContents.send(channels.state, true));
+  win.on('unmaximize', () => win.webContents.send(channels.state, false));
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event, url) => {
     if (devUrl && url.startsWith(devUrl)) return;
     if (url.startsWith('file:')) return;
     event.preventDefault();
   });
-  if (devUrl) void win.loadURL(devUrl);
-  else void win.loadFile(fileURLToPath(new URL('../renderer/index.html', import.meta.url)));
+  load(win, sources);
   return win;
+}
+
+function readSource(value: unknown): SourceRequest | null {
+  if (!value || typeof value !== 'object') return null;
+  const item = value as Partial<SourceRequest>;
+  const kinds: SourceKind[] = ['local', 'ssh', 'sftp', 'ftp'];
+  if (!item.kind || !kinds.includes(item.kind)) return null;
+  if (typeof item.label !== 'string' || typeof item.path !== 'string') return null;
+  if (typeof item.host !== 'string' || typeof item.user !== 'string') return null;
+  const port = Number(item.port);
+  if (!Number.isFinite(port)) return null;
+  return { kind: item.kind, label: item.label, path: item.path, host: item.host, port, user: item.user };
+}
+
+function registerWindowIpc(): void {
+  ipcMain.on(channels.minimize, (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize();
+  });
+  ipcMain.on(channels.toggleMaximize, (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return;
+    if (win.isMaximized()) win.unmaximize();
+    else win.maximize();
+  });
+  ipcMain.on(channels.close, (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.close();
+  });
+  ipcMain.handle(channels.openSources, () => {
+    if (sourcesWindow && !sourcesWindow.isDestroyed()) {
+      sourcesWindow.focus();
+      return;
+    }
+    sourcesWindow = createWindow(true);
+    sourcesWindow.on('closed', () => {
+      sourcesWindow = null;
+    });
+  });
+  ipcMain.on(channels.source, (event, value: unknown) => {
+    const source = readSource(value);
+    if (!source || !manager || manager.isDestroyed()) return;
+    manager.webContents.send(channels.source, source);
+    if (manager.isMinimized()) manager.restore();
+    manager.focus();
+    BrowserWindow.fromWebContents(event.sender)?.close();
+  });
 }
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    const win = BrowserWindow.getAllWindows()[0];
-    if (!win) return;
-    if (win.isMinimized()) win.restore();
-    win.focus();
+    if (!manager || manager.isDestroyed()) return;
+    if (manager.isMinimized()) manager.restore();
+    manager.focus();
   });
   app.whenReady().then(() => {
     if (!devUrl) installProductionPolicy();
     registerIpc(shell);
-    createWindow();
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    registerWindowIpc();
+    manager = createWindow(false);
+    manager.on('closed', () => {
+      manager = null;
+      if (sourcesWindow && !sourcesWindow.isDestroyed()) sourcesWindow.close();
     });
   });
   app.on('window-all-closed', () => {
