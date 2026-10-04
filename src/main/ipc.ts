@@ -1,6 +1,7 @@
 import { BrowserWindow, Menu, ipcMain, type MenuItemConstructorOptions, type Shell, type WebContents } from 'electron';
 import { channels, failure, type ContextAction, type ContextMenuRequest, type Result } from '../shared/ipc';
 import { copyPaths, createDirectory, listDirectory, locations, movePaths, removePaths, renamePath, absolutePath } from './filesystem/local';
+import { popupWindowsShellMenu } from './platform/shell-menu';
 
 async function guard<T>(run: () => Promise<T>): Promise<Result<T>> {
   try {
@@ -19,6 +20,10 @@ function contextRequest(input: unknown): ContextMenuRequest {
   if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Некорректное меню');
   const kind = item.kind;
   if (kind !== 'local' && kind !== 'ssh' && kind !== 'sftp' && kind !== 'ftp') throw new Error('Некорректное меню');
+  const paths = item.paths;
+  if (paths != null && (!Array.isArray(paths) || paths.some((entry) => typeof entry !== 'string'))) {
+    throw new Error('Некорректное меню');
+  }
   return {
     x: Math.round(x),
     y: Math.round(y),
@@ -27,6 +32,9 @@ function contextRequest(input: unknown): ContextMenuRequest {
     rename: item.rename === true,
     transfer: item.transfer === true,
     remove: item.remove === true,
+    paths: Array.isArray(paths) ? paths : [],
+    directory: typeof item.directory === 'string' ? item.directory : '',
+    extended: item.extended === true,
   };
 }
 
@@ -120,6 +128,13 @@ export function registerIpc(shell: Shell): void {
     }),
   );
   ipcMain.handle(channels.contextMenu, (event, input: unknown) =>
-    guard(() => popupContextMenu(contextRequest(input), event.sender)),
+    guard(async () => {
+      const request = contextRequest(input);
+      if (request.kind === 'local' && process.platform === 'win32') {
+        const native = await popupWindowsShellMenu(request, event.sender);
+        if (native !== 'fallback') return native;
+      }
+      return popupContextMenu(request, event.sender);
+    }),
   );
 }

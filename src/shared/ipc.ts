@@ -41,6 +41,9 @@ export interface ContextMenuRequest {
   rename: boolean;
   transfer: boolean;
   remove: boolean;
+  paths: string[];
+  directory: string;
+  extended: boolean;
 }
 
 export type ContextAction =
@@ -53,7 +56,8 @@ export type ContextAction =
   | 'download'
   | 'upload'
   | 'copy-address'
-  | 'disconnect';
+  | 'disconnect'
+  | 'shell';
 
 export type Result<T> = { ok: true; value: T } | { ok: false; message: string };
 

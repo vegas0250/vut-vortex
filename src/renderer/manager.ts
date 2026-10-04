@@ -83,7 +83,7 @@ export function mountManager(): void {
   function iconButton(label: string, icon: string): VIconButton {
     const element = document.createElement('vui-icon-button') as VIconButton;
     element.setAttribute('variant', 'ghost');
-    element.setAttribute('size', 'large');
+    element.setAttribute('size', 'medium');
     element.setAttribute('slot', 'start');
     element.setAttribute('label', label);
     element.setAttribute('name', icon);
@@ -254,9 +254,20 @@ export function mountManager(): void {
     return view;
   }
 
+  function makeOverlay(): HTMLElement {
+    const overlay = document.createElement('div');
+    overlay.className = 'pane-overlay';
+    overlay.hidden = true;
+    const label = document.createElement('span');
+    label.textContent = 'Чтение каталога…';
+    overlay.append(label);
+    return overlay;
+  }
+
   const leftProgress = document.createElement('vui-progress');
   leftProgress.setAttribute('label', 'Загрузка сети');
   leftProgress.hidden = true;
+  const leftOverlay = makeOverlay();
   const grid = makeGrid('Файлы');
   const listing = document.createElement('div');
   listing.className = 'listing';
@@ -268,7 +279,10 @@ export function mountManager(): void {
   const empty = document.createElement('vui-empty');
   empty.setAttribute('heading', 'Нет каталога');
   empty.setAttribute('label', 'Не удалось открыть расположение');
-  stage.append(makeHead(leftResource, leftNav), leftProgress, listing, empty);
+  const leftBody = document.createElement('div');
+  leftBody.className = 'pane-body';
+  leftBody.append(listing, empty, leftOverlay);
+  stage.append(makeHead(leftResource, leftNav), leftProgress, leftBody);
   empty.hidden = true;
   stage.toggleAttribute('data-active', true);
 
@@ -278,6 +292,7 @@ export function mountManager(): void {
   const rightProgress = document.createElement('vui-progress');
   rightProgress.setAttribute('label', 'Загрузка сети');
   rightProgress.hidden = true;
+  const rightOverlay = makeOverlay();
   const rightGrid = makeGrid('Вторая панель');
   const rightListing = document.createElement('div');
   rightListing.className = 'listing';
@@ -289,7 +304,10 @@ export function mountManager(): void {
   const rightEmpty = document.createElement('vui-empty');
   rightEmpty.setAttribute('heading', 'Нет каталога');
   rightEmpty.setAttribute('label', 'Не удалось открыть расположение');
-  rightStage.append(makeHead(rightResource, rightNav), rightProgress, rightListing, rightEmpty);
+  const rightBody = document.createElement('div');
+  rightBody.className = 'pane-body';
+  rightBody.append(rightListing, rightEmpty, rightOverlay);
+  rightStage.append(makeHead(rightResource, rightNav), rightProgress, rightBody);
   rightEmpty.hidden = true;
 
   const status = document.createElement('vui-status-bar');
@@ -337,6 +355,7 @@ export function mountManager(): void {
   let blocking = 0;
   let leftTicket = 0;
   let rightTicket = 0;
+  const overlayTimer = { left: 0, right: 0 };
   let computerName = 'Этот компьютер';
 
   function active(): Session | undefined {
@@ -495,9 +514,6 @@ export function mountManager(): void {
     side = next;
     stage.toggleAttribute('data-active', next === 'left');
     rightStage.toggleAttribute('data-active', next === 'right');
-    const current = currentPage();
-    const field = side === 'right' ? rightNav.path : leftNav.path;
-    if (current) showAddress(field, current.path);
     syncCommands();
   }
 
@@ -693,6 +709,9 @@ export function mountManager(): void {
   function beginLoad(which: 'left' | 'right', target: string): number {
     const network = isNetworkRoot(target);
     const bar = which === 'right' ? rightProgress : leftProgress;
+    const overlay = which === 'right' ? rightOverlay : leftOverlay;
+    window.clearTimeout(overlayTimer[which]);
+    overlay.hidden = true;
     const ticket = ++loadSerial;
     if (which === 'right') rightTicket = ticket;
     else leftTicket = ticket;
@@ -711,6 +730,9 @@ export function mountManager(): void {
     busy = true;
     syncCommands();
     if (side === which) statusMain.textContent = 'Чтение каталога…';
+    overlayTimer[which] = window.setTimeout(() => {
+      overlay.hidden = false;
+    }, 140);
     return ticket;
   }
 
@@ -718,6 +740,8 @@ export function mountManager(): void {
     const current = which === 'right' ? rightTicket : leftTicket;
     if (ticket !== current) return false;
     (which === 'right' ? rightProgress : leftProgress).hidden = true;
+    window.clearTimeout(overlayTimer[which]);
+    (which === 'right' ? rightOverlay : leftOverlay).hidden = true;
     if (!network && blocking === ticket) {
       blocking = 0;
       busy = false;
@@ -976,8 +1000,8 @@ export function mountManager(): void {
       void reload();
     });
     nav.path.addEventListener('change', () => {
-      focusSide(which);
       const next = nav.path.value.trim();
+      focusSide(which);
       if (next) void openDirectory(next, true);
     });
   }
@@ -1079,10 +1103,19 @@ export function mountManager(): void {
     await openDirectory(entry.path, true);
   }
 
-  async function openSystemMenu(entries: readonly FileEntry[], x: number, y: number): Promise<void> {
-    if (!entries.length || busy) return;
+  function menuPaths(entries: readonly FileEntry[]): string[] {
+    const files = entries.filter((entry) => entry.name !== '.' && entry.name !== '..').map((entry) => entry.path);
+    if (files.length) return files;
+    const parent = entries.find((entry) => entry.name === '..');
+    return parent ? [parent.path] : [];
+  }
+
+  async function openSystemMenu(entries: readonly FileEntry[], x: number, y: number, extended = false): Promise<void> {
+    if (busy) return;
+    const directory = currentPage()?.path ?? '';
+    if (!entries.length && !directory) return;
     const mutable = entries.filter(canChange);
-    const intact = mutable.length === entries.length;
+    const intact = entries.length > 0 && mutable.length === entries.length;
     const result = await window.vortex.contextMenu({
       x,
       y,
@@ -1091,9 +1124,16 @@ export function mountManager(): void {
       rename: entries.length === 1 && intact,
       transfer: intact && mutable.length > 0,
       remove: intact && mutable.length > 0,
+      paths: menuPaths(entries),
+      directory,
+      extended,
     });
     if (!result.ok) {
       statusMain.textContent = result.message;
+      return;
+    }
+    if (result.value === 'shell') {
+      await reload();
       return;
     }
     const action: ContextAction | null = result.value;
@@ -1166,6 +1206,9 @@ export function mountManager(): void {
       rename: entries.length === 1 && intact,
       transfer: intact && mutable.length > 0,
       remove: intact && mutable.length > 0,
+      paths: [],
+      directory: '',
+      extended: false,
     });
     if (!result.ok) {
       statusMain.textContent = result.message;
@@ -1197,10 +1240,10 @@ export function mountManager(): void {
     statusMain.textContent = `${kind.toUpperCase()}: «${names[action] ?? action}» выполнится после подключения провайдера`;
   }
 
-  function openPaneMenu(which: 'left' | 'right', entries: readonly FileEntry[], x: number, y: number): void {
+  function openPaneMenu(which: 'left' | 'right', entries: readonly FileEntry[], x: number, y: number, extended = false): void {
     const kind = paneKind(which);
     if (kind === 'local') {
-      void openSystemMenu(entries, x, y);
+      void openSystemMenu(entries, x, y, extended);
       return;
     }
     void openResourceMenu(which, kind, entries, x, y);
@@ -1256,7 +1299,7 @@ export function mountManager(): void {
         const source = which === 'left' ? page : right.page;
         const ids = new Set(view.selectedIds);
         const entries = source?.entries.filter((entry) => ids.has(entry.path)) ?? [];
-        openPaneMenu(which, entries, event.clientX, event.clientY);
+        openPaneMenu(which, entries, event.clientX, event.clientY, event.shiftKey);
       },
       true,
     );
@@ -1267,15 +1310,15 @@ export function mountManager(): void {
 
   function bindResourceMenu(host: HTMLElement, which: 'left' | 'right'): void {
     host.addEventListener('contextmenu', (event) => {
-      if (paneKind(which) === 'local' || event.defaultPrevented) return;
+      if (event.defaultPrevented) return;
       event.preventDefault();
       focusSide(which);
-      openPaneMenu(which, [], event.clientX, event.clientY);
+      openPaneMenu(which, [], event.clientX, event.clientY, event.shiftKey);
     });
   }
 
-  bindResourceMenu(stage, 'left');
-  bindResourceMenu(rightStage, 'right');
+  bindResourceMenu(leftBody, 'left');
+  bindResourceMenu(rightBody, 'right');
 
   const dropMenu = document.createElement('vui-menu') as VMenu;
   dropMenu.setAttribute('label', 'Перенос');
