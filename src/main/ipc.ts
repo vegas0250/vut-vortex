@@ -1,7 +1,7 @@
 import { BrowserWindow, Menu, ipcMain, type MenuItemConstructorOptions, type Shell, type WebContents } from 'electron';
 import { channels, failure, type ContextAction, type ContextMenuRequest, type Result } from '../shared/ipc';
 import { copyPaths, createDirectory, listDirectory, locations, movePaths, removePaths, renamePath, absolutePath } from './filesystem/local';
-import { popupWindowsShellMenu } from './platform/shell-menu';
+import { dismissWindowsShellMenu, invokeWindowsShellMenu, readWindowsShellMenu } from './platform/shell-menu';
 
 async function guard<T>(run: () => Promise<T>): Promise<Result<T>> {
   try {
@@ -128,13 +128,21 @@ export function registerIpc(shell: Shell): void {
     }),
   );
   ipcMain.handle(channels.contextMenu, (event, input: unknown) =>
+    guard(() => popupContextMenu(contextRequest(input), event.sender)),
+  );
+  ipcMain.handle(channels.shellMenu, (event, input: unknown) =>
     guard(async () => {
       const request = contextRequest(input);
-      if (request.kind === 'local' && process.platform === 'win32') {
-        const native = await popupWindowsShellMenu(request, event.sender);
-        if (native !== 'fallback') return native;
-      }
-      return popupContextMenu(request, event.sender);
+      if (request.kind !== 'local' || process.platform !== 'win32') return null;
+      return readWindowsShellMenu(request, event.sender);
     }),
   );
+  ipcMain.handle(channels.shellInvoke, (_event, command: unknown) =>
+    guard(() => {
+      const id = Number(command);
+      if (!Number.isInteger(id) || id < 0) throw new Error('Некорректная команда меню');
+      return invokeWindowsShellMenu(id);
+    }),
+  );
+  ipcMain.handle(channels.shellDismiss, () => guard(() => dismissWindowsShellMenu()));
 }

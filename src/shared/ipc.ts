@@ -8,6 +8,9 @@ export const channels = {
   move: 'fs:move',
   open: 'fs:open',
   contextMenu: 'fs:context-menu',
+  shellMenu: 'fs:shell-menu',
+  shellInvoke: 'fs:shell-invoke',
+  shellDismiss: 'fs:shell-dismiss',
   minimize: 'window:minimize',
   toggleMaximize: 'window:toggle-maximize',
   close: 'window:close',
@@ -44,6 +47,16 @@ export interface ContextMenuRequest {
   paths: string[];
   directory: string;
   extended: boolean;
+}
+
+export interface ShellMenuNode {
+  label: string;
+  shortcut: string;
+  separator: boolean;
+  disabled: boolean;
+  checked: boolean;
+  command: number | null;
+  children: ShellMenuNode[];
 }
 
 export type ContextAction =

@@ -39,7 +39,7 @@ import {
   type FileEntry,
   type Place,
 } from '../shared/files';
-import type { ContextAction, OpenedSource, Result, SourceKind, SourceRequest } from '../shared/ipc';
+import type { ContextAction, OpenedSource, Result, ShellMenuNode, SourceKind, SourceRequest } from '../shared/ipc';
 
 interface Session extends SourceRequest {
   id: string;
@@ -355,6 +355,8 @@ export function mountManager(): void {
   let blocking = 0;
   let leftTicket = 0;
   let rightTicket = 0;
+  let shellChosen = false;
+  let shellQuiet = false;
   const overlayTimer = { left: 0, right: 0 };
   let computerName = 'Этот компьютер';
 
@@ -1110,16 +1112,41 @@ export function mountManager(): void {
     return parent ? [parent.path] : [];
   }
 
+  function paintShellMenu(host: VMenu, nodes: readonly ShellMenuNode[]): void {
+    host.replaceChildren();
+    for (const node of nodes) {
+      if (node.separator) {
+        host.append(document.createElement('hr'));
+        continue;
+      }
+      const item = document.createElement('vui-menu-item');
+      item.setAttribute('label', node.label);
+      if (node.shortcut) item.setAttribute('shortcut', node.shortcut);
+      if (node.disabled) item.setAttribute('disabled', '');
+      if (node.checked) item.setAttribute('checked', '');
+      if (node.children.length > 0) {
+        const nested = document.createElement('vui-menu') as VMenu;
+        nested.setAttribute('slot', 'submenu');
+        nested.setAttribute('label', node.label);
+        paintShellMenu(nested, node.children);
+        item.append(nested);
+      } else if (node.command !== null) {
+        item.dataset.shell = String(node.command);
+      }
+      host.append(item);
+    }
+  }
+
   async function openSystemMenu(entries: readonly FileEntry[], x: number, y: number, extended = false): Promise<void> {
     if (busy) return;
     const directory = currentPage()?.path ?? '';
     if (!entries.length && !directory) return;
     const mutable = entries.filter(canChange);
     const intact = entries.length > 0 && mutable.length === entries.length;
-    const result = await window.vortex.contextMenu({
+    const request = {
       x,
       y,
-      kind: 'local',
+      kind: 'local' as const,
       open: entries.length === 1,
       rename: entries.length === 1 && intact,
       transfer: intact && mutable.length > 0,
@@ -1127,13 +1154,24 @@ export function mountManager(): void {
       paths: menuPaths(entries),
       directory,
       extended,
-    });
-    if (!result.ok) {
-      statusMain.textContent = result.message;
+    };
+    shellQuiet = true;
+    shellHost.close();
+    shellQuiet = false;
+    const listed = await window.vortex.shellMenu(request);
+    if (!listed.ok) {
+      statusMain.textContent = listed.message;
       return;
     }
-    if (result.value === 'shell') {
-      await reload();
+    if (listed.value?.length) {
+      paintShellMenu(shellHost, listed.value);
+      shellChosen = false;
+      shellHost.showAt(x, y);
+      return;
+    }
+    const result = await window.vortex.contextMenu(request);
+    if (!result.ok) {
+      statusMain.textContent = result.message;
       return;
     }
     const action: ContextAction | null = result.value;
@@ -1319,6 +1357,32 @@ export function mountManager(): void {
 
   bindResourceMenu(leftBody, 'left');
   bindResourceMenu(rightBody, 'right');
+
+  const shellHost = document.createElement('vui-menu') as VMenu;
+  shellHost.setAttribute('label', 'Файл');
+  document.body.append(shellHost);
+  shellHost.addEventListener('click', (event) => {
+    const item = event.target;
+    if (!(item instanceof HTMLElement) || item.dataset.shell === undefined || item.hasAttribute('disabled')) return;
+    const command = Number(item.dataset.shell);
+    if (!Number.isInteger(command)) return;
+    shellChosen = true;
+    void (async () => {
+      const invoked = await window.vortex.shellInvoke(command);
+      if (!invoked.ok) {
+        statusMain.textContent = invoked.message;
+        return;
+      }
+      if (invoked.value) await reload();
+    })();
+  }, true);
+  shellHost.addEventListener('close', () => {
+    if (shellChosen || shellQuiet) {
+      shellChosen = false;
+      return;
+    }
+    void window.vortex.shellDismiss();
+  });
 
   const dropMenu = document.createElement('vui-menu') as VMenu;
   dropMenu.setAttribute('label', 'Перенос');

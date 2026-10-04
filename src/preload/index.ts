@@ -3,6 +3,7 @@ import {
   channels,
   type ContextAction,
   type ContextMenuRequest,
+  type ShellMenuNode,
   type OpenedSource,
   type Result,
   type SourceRequest,
@@ -24,6 +25,10 @@ const api = {
   open: (target: string): Promise<Result<void>> => ipcRenderer.invoke(channels.open, target),
   contextMenu: (request: ContextMenuRequest): Promise<Result<ContextAction | null>> =>
     ipcRenderer.invoke(channels.contextMenu, request),
+  shellMenu: (request: ContextMenuRequest): Promise<Result<ShellMenuNode[] | null>> =>
+    ipcRenderer.invoke(channels.shellMenu, request),
+  shellInvoke: (command: number): Promise<Result<boolean>> => ipcRenderer.invoke(channels.shellInvoke, command),
+  shellDismiss: (): Promise<Result<void>> => ipcRenderer.invoke(channels.shellDismiss),
   minimize: (): void => ipcRenderer.send(channels.minimize),
   toggleMaximize: (): void => ipcRenderer.send(channels.toggleMaximize),
   close: (): void => ipcRenderer.send(channels.close),
