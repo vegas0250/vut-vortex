@@ -1,5 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { channels, type OpenedSource, type Result, type SourceRequest, type SourceTarget } from '../shared/ipc';
+import {
+  channels,
+  type ContextAction,
+  type ContextMenuRequest,
+  type OpenedSource,
+  type Result,
+  type SourceRequest,
+  type SourceTarget,
+} from '../shared/ipc';
 import type { DirectoryPage, LocationIndex } from '../shared/files';
 
 const api = {
@@ -14,6 +22,8 @@ const api = {
   move: (targets: string[], destination: string): Promise<Result<void>> =>
     ipcRenderer.invoke(channels.move, targets, destination),
   open: (target: string): Promise<Result<void>> => ipcRenderer.invoke(channels.open, target),
+  contextMenu: (request: ContextMenuRequest): Promise<Result<ContextAction | null>> =>
+    ipcRenderer.invoke(channels.contextMenu, request),
   minimize: (): void => ipcRenderer.send(channels.minimize),
   toggleMaximize: (): void => ipcRenderer.send(channels.toggleMaximize),
   close: (): void => ipcRenderer.send(channels.close),

@@ -20,11 +20,13 @@ export interface Place {
   id: string;
   label: string;
   path: string;
+  group?: string;
 }
 
 export interface LocationIndex {
   places: Place[];
   roots: Place[];
+  computer: string;
 }
 
 export interface Crumb {
@@ -34,6 +36,10 @@ export interface Crumb {
 
 export function separatorOf(target: string): '/' | '\\' {
   return target.includes('\\') ? '\\' : '/';
+}
+
+export function isNetworkRoot(target: string): boolean {
+  return /^\\+$/.test(target.trim());
 }
 
 export function parentPath(target: string): string | null {
@@ -115,6 +121,14 @@ export function formatModified(modified: number | null): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(modified);
 }
 
+export const nameLimit = 35;
+
+export function clipLabel(value: string, limit = nameLimit): string {
+  const chars = Array.from(value);
+  if (chars.length <= limit) return value;
+  return `${chars.slice(0, Math.max(0, limit - 1)).join('')}…`;
+}
+
 export function displayName(name: string, kind: FileKind, showExtension: boolean): string {
   if (showExtension || kind === 'directory' || kind === 'symlink') return name;
   const dot = name.lastIndexOf('.');
@@ -158,6 +172,7 @@ export function placeIcon(id: string): string {
   if (id === 'music') return 'file-audio';
   if (id === 'videos') return 'file-play';
   if (id === 'network') return 'globe';
+  if (id === 'yandex' || id.startsWith('pin:')) return 'hard-drive';
   if (id.startsWith('wsl')) return 'terminal';
   return 'hard-drive';
 }

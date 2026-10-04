@@ -84,7 +84,7 @@ function registerWindowIpc(): void {
     BrowserWindow.fromWebContents(event.sender)?.close();
   });
   ipcMain.handle(channels.openSources, (_event, target: unknown) => {
-    sourceTarget = target === 'pane' ? 'pane' : 'tab';
+    sourceTarget = target === 'pane' || target === 'active' ? target : 'tab';
     if (sourcesWindow && !sourcesWindow.isDestroyed()) {
       sourcesWindow.focus();
       return;

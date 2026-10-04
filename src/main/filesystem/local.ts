@@ -61,7 +61,7 @@ function containedBy(parent: string, child: string): boolean {
 export async function listDirectory(input: unknown, showHidden: boolean): Promise<DirectoryPage> {
   if (typeof input === 'string') {
     const special = await platform().specialList(input, showHidden);
-    if (special) return special;
+    if (special) return withNavigation(special);
   }
   const directory = absolutePath(input);
   const info = await lstat(directory);
@@ -96,18 +96,31 @@ export async function listDirectory(input: unknown, showHidden: boolean): Promis
       };
     }
   });
-  return {
+  return withNavigation({
     path: directory,
     parent: parentPath(directory),
     separator: separatorOf(directory),
     entries: sortEntries(entries.filter((entry): entry is FileEntry => entry !== null)),
+  });
+}
+
+function withNavigation(page: DirectoryPage): DirectoryPage {
+  const up: FileEntry = {
+    name: '..',
+    path: page.parent ?? page.path,
+    kind: 'directory',
+    size: null,
+    modified: null,
+    hidden: false,
   };
+  const rest = page.entries.filter((entry) => entry.name !== '.' && entry.name !== '..');
+  return { ...page, entries: [up, ...rest] };
 }
 
 export async function locations(): Promise<LocationIndex> {
   const adapter = platform();
   const [places, roots] = await Promise.all([locationPlaces(adapter), adapter.roots()]);
-  return { places, roots };
+  return { places, roots, computer: adapter.id === 'windows' ? 'Этот компьютер' : 'Диски' };
 }
 
 export async function createDirectory(parentInput: unknown, nameInput: unknown): Promise<string> {

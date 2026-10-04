@@ -7,6 +7,7 @@ export const channels = {
   copy: 'fs:copy',
   move: 'fs:move',
   open: 'fs:open',
+  contextMenu: 'fs:context-menu',
   minimize: 'window:minimize',
   toggleMaximize: 'window:toggle-maximize',
   close: 'window:close',
@@ -17,7 +18,7 @@ export const channels = {
 
 export type SourceKind = 'local' | 'ssh' | 'sftp' | 'ftp';
 
-export type SourceTarget = 'tab' | 'pane';
+export type SourceTarget = 'tab' | 'pane' | 'active';
 
 export interface SourceRequest {
   kind: SourceKind;
@@ -31,6 +32,28 @@ export interface SourceRequest {
 export interface OpenedSource extends SourceRequest {
   target: SourceTarget;
 }
+
+export interface ContextMenuRequest {
+  x: number;
+  y: number;
+  kind: SourceKind;
+  open: boolean;
+  rename: boolean;
+  transfer: boolean;
+  remove: boolean;
+}
+
+export type ContextAction =
+  | 'open'
+  | 'rename'
+  | 'copy'
+  | 'move'
+  | 'delete'
+  | 'terminal'
+  | 'download'
+  | 'upload'
+  | 'copy-address'
+  | 'disconnect';
 
 export type Result<T> = { ok: true; value: T } | { ok: false; message: string };
 

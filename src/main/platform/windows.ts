@@ -4,7 +4,7 @@ import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import type { DirectoryPage, Place } from '../../shared/files';
+import { isNetworkRoot, type DirectoryPage, type Place } from '../../shared/files';
 import type { PlatformAdapter } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -77,9 +77,106 @@ async function wslPlaces(): Promise<Place[]> {
   for (const [key, value] of nested) if (key === 'DistributionName') names.add(value);
   return [...names].sort((left, right) => left.localeCompare(right)).map((name) => ({
     id: `wsl:${name}`,
-    label: `WSL ${name}`,
+    label: name,
     path: `\\\\wsl.localhost\\${name}`,
+    group: 'linux',
   }));
+}
+
+export interface QuickAccessRow {
+  pinned: boolean;
+  name: string;
+  path: string;
+  display: string;
+}
+
+export function parseQuickAccess(stdout: string): QuickAccessRow[] {
+  const rows: QuickAccessRow[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const [flag, name, rawPath, rawDisplay = ''] = line.split('\t');
+    if ((flag !== '0' && flag !== '1') || !name?.trim() || (!rawPath?.trim() && !rawDisplay.trim())) continue;
+    rows.push({
+      pinned: flag === '1',
+      name: name.trim(),
+      path: rawPath?.trim() ?? '',
+      display: rawDisplay.trim(),
+    });
+  }
+  return rows;
+}
+
+export function filesystemPath(value: string): string | null {
+  const trimmed = value.trim().replace(/^\\\\\?\\/, '');
+  if (/^[A-Za-z]:\\/.test(trimmed) || trimmed.startsWith('\\\\')) return trimmed;
+  const drive = trimmed.match(/\(([A-Za-z]:)\\?\)/);
+  if (drive?.[1]) return `${drive[1]}\\`;
+  return null;
+}
+
+function cloudName(name: string): boolean {
+  return /yandex|яндекс/iu.test(name);
+}
+
+export function placesFromQuickAccess(rows: readonly QuickAccessRow[]): Place[] {
+  const picked = rows.filter((row) => row.pinned || cloudName(row.name));
+  const places: Place[] = [];
+  for (const row of picked) {
+    const folder = filesystemPath(row.path) ?? filesystemPath(row.display);
+    if (!folder || places.some((item) => samePath(item.path, folder))) continue;
+    const yandex = cloudName(row.name);
+    places.push({
+      id: yandex ? 'yandex' : `pin:${folder}`,
+      label: row.name,
+      path: folder,
+    });
+  }
+  return places;
+}
+
+function samePath(left: string, right: string): boolean {
+  return left.replace(/[\\/]+$/, '').toLowerCase() === right.replace(/[\\/]+$/, '').toLowerCase();
+}
+
+const quickAccessScript = [
+  '$OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false',
+  '$shell = New-Object -ComObject Shell.Application',
+  "$folder = $shell.NameSpace('shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}')",
+  'if ($null -eq $folder) { exit 0 }',
+  'foreach ($item in @($folder.Items())) {',
+  "  $raw = $item.ExtendedProperty('System.Home.IsPinned')",
+  "  $flag = '0'",
+  '  if ($raw -eq $true -or $raw -eq -1) { $flag = \'1\' }',
+  "  $display = $item.ExtendedProperty('System.ItemPathDisplay')",
+  '  $path = ([string]$item.Path) -replace "[`r`n`t]", " "',
+  '  if ($display) { $display = ([string]$display) -replace "[`r`n`t]", " " } else { $display = "" }',
+  '  $name = ([string]$item.Name) -replace "[`r`n`t]", " "',
+  '  Write-Output ($flag + [char]9 + $name + [char]9 + $path + [char]9 + $display)',
+  '}',
+].join('\n');
+
+async function quickAccessPlaces(): Promise<Place[]> {
+  try {
+    const encoded = Buffer.from(quickAccessScript, 'utf16le').toString('base64');
+    const { stdout } = await execFileAsync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
+      { windowsHide: true, timeout: 8000, encoding: 'utf8' },
+    );
+    const places: Place[] = [];
+    for (const place of placesFromQuickAccess(parseQuickAccess(stdout))) {
+      if (!/^[A-Za-z]:\\/.test(place.path) || (await readable(place.path))) places.push(place);
+    }
+    return places;
+  } catch {
+    return [];
+  }
+}
+
+async function yandexFolder(home: string): Promise<Place | null> {
+  for (const folder of [path.join(home, 'YandexDisk'), path.join(home, 'Yandex.Disk')]) {
+    if (await readable(folder)) return { id: 'yandex', label: 'Яндекс.Диск', path: folder };
+  }
+  return null;
 }
 
 export const windowsPlatform: PlatformAdapter = {
@@ -105,9 +202,8 @@ export const windowsPlatform: PlatformAdapter = {
     return found;
   },
   specialList(target: string): Promise<DirectoryPage | null> {
-    const root = target.replace(/[\\/]+$/, '');
-    if (root !== '\\\\' && target !== '\\\\' && target !== '\\') return Promise.resolve(null);
-    return execFileAsync('net.exe', ['view'], { windowsHide: true, timeout: 8000 })
+    if (!isNetworkRoot(target)) return Promise.resolve(null);
+    return execFileAsync('net.exe', ['view'], { windowsHide: true, timeout: 20000 })
       .then(({ stdout }) => {
         const entries = parseNetView(stdout).map((name) => ({
           name,
@@ -123,15 +219,26 @@ export const windowsPlatform: PlatformAdapter = {
   },
   async quickLinks(): Promise<Place[]> {
     const home = process.env.USERPROFILE || homedir();
-    const stored = await registryValues(['HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders']);
+    const [stored, pinned, distros] = await Promise.all([
+      registryValues(['HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders']),
+      quickAccessPlaces(),
+      wslPlaces(),
+    ]);
     const links: Place[] = [{ id: 'home', label: 'Домой', path: home }];
     for (const [key, id, label] of shellFolders) {
       const raw = stored.get(key);
       const folder = raw ? expandEnv(raw) : path.join(home, defaultFolder(id));
       if (folder && folder !== home && (await readable(folder))) links.push({ id, label, path: folder });
     }
+    for (const place of pinned) {
+      if (!links.some((item) => samePath(item.path, place.path))) links.push(place);
+    }
+    if (!links.some((item) => item.id === 'yandex' || cloudName(item.label))) {
+      const yandex = await yandexFolder(home);
+      if (yandex && !links.some((item) => samePath(item.path, yandex.path))) links.push(yandex);
+    }
     links.push({ id: 'network', label: 'Сеть', path: '\\\\' });
-    links.push(...(await wslPlaces()));
+    links.push(...distros);
     return links;
   },
 };

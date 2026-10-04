@@ -40,6 +40,8 @@ export function mountSources(): void {
 
   const stage = document.createElement('div');
   stage.className = 'stage source-stage';
+  const scroll = document.createElement('div');
+  scroll.className = 'source-scroll';
   const heading = document.createElement('vui-text');
   heading.setAttribute('variant', 'heading');
   heading.setAttribute('level', '2');
@@ -60,7 +62,8 @@ export function mountSources(): void {
   const connect = document.createElement('vui-button');
   connect.setAttribute('variant', 'primary');
   connect.textContent = 'Открыть';
-  stage.append(heading, detail, places, host, port, user, remotePath, connect);
+  scroll.append(heading, detail, places, host, port, user, remotePath);
+  stage.append(scroll, connect);
   shell.append(nav, stage);
   app.append(shell);
 
