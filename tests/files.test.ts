@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { copyPaths, createDirectory, listDirectory, movePaths, removePaths, renamePath } from '../src/main/filesystem/local';
-import { clipLabel, crumbs, displayName, formatSize, isNetworkRoot, parentPath, singleSegment, sortEntries, type FileEntry } from '../src/shared/files';
+import { clipLabel, crumbs, displayName, formatSize, includeListed, isNetworkRoot, parentPath, singleSegment, sortEntries, type FileEntry } from '../src/shared/files';
 import { expandEnv, filesystemPath, parseNetView, parseQuickAccess, parseRegistryValues, placesFromQuickAccess } from '../src/main/platform/windows';
 
 describe('paths', () => {
@@ -48,12 +48,17 @@ describe('paths', () => {
     expect(() => singleSegment('../etc')).toThrow(/Недопустимое имя/);
     expect(singleSegment(' notes ')).toBe('notes');
     const entries: FileEntry[] = [
-      { name: 'b.txt', path: '/b.txt', kind: 'file', size: 1, modified: null, hidden: false },
-      { name: 'a', path: '/a', kind: 'directory', size: null, modified: null, hidden: false },
+      { name: 'b.txt', path: '/b.txt', kind: 'file', size: 1, modified: null, hidden: false, system: false },
+      { name: 'a', path: '/a', kind: 'directory', size: null, modified: null, hidden: false, system: false },
     ];
     expect(sortEntries(entries).map((entry) => entry.name)).toEqual(['a', 'b.txt']);
     expect(formatSize(1536, 'file')).toBe('1.5 КБ');
     expect(formatSize(null, 'directory')).toBe('');
+    expect(includeListed(false, true, true, false)).toBe(false);
+    expect(includeListed(true, true, true, false)).toBe(false);
+    expect(includeListed(false, true, false, true)).toBe(true);
+    expect(includeListed(true, false, false, true)).toBe(false);
+    expect(includeListed(false, false, false, false)).toBe(true);
   });
 });
 

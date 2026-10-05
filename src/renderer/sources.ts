@@ -10,7 +10,7 @@ import type { SourceKind, SourceRequest } from '../shared/ipc';
 import type { Place } from '../shared/files';
 
 const kinds: Array<{ kind: SourceKind; label: string; detail: string; icon: string; port: number }> = [
-  { kind: 'local', label: 'Локальный', detail: 'Диски и папки этого компьютера', icon: 'hard-drive', port: 0 },
+  { kind: 'local', label: 'Локальный', detail: 'Выберите диск', icon: 'hard-drive', port: 0 },
   { kind: 'ssh', label: 'SSH', detail: 'Оболочка на удалённой машине', icon: 'terminal', port: 22 },
   { kind: 'sftp', label: 'SFTP', detail: 'Файлы по SSH', icon: 'server', port: 22 },
   { kind: 'ftp', label: 'FTP', detail: 'Файлы по FTP', icon: 'globe', port: 21 },
@@ -48,7 +48,7 @@ export function mountSources(): void {
   const detail = document.createElement('vui-text');
   detail.setAttribute('muted', '');
   const places = document.createElement('vui-nav');
-  places.setAttribute('label', 'Расположения');
+  places.setAttribute('label', 'Диски');
   const host = document.createElement('vui-input') as VInput;
   host.setAttribute('label', 'Хост');
   const port = document.createElement('vui-input') as VInput;
@@ -132,7 +132,7 @@ export function mountSources(): void {
       detail.textContent = index.message;
       return;
     }
-    locations = [...index.value.places, ...index.value.roots];
+    locations = index.value.roots;
     places.replaceChildren();
     for (const [indexPlace, place] of locations.entries()) {
       const item = document.createElement('vui-nav-item');

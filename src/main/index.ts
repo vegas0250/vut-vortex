@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, session, shell } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { channels, type SourceKind, type SourceRequest, type SourceTarget } from '../shared/ipc';
 import { registerIpc } from './ipc';
+import { shutdownContextMenu, warmContextMenu } from './context-menu';
 
 const devUrl = process.env.VUT_RENDERER_URL;
 let manager: BrowserWindow | null = null;
@@ -116,11 +117,15 @@ if (!app.requestSingleInstanceLock()) {
     if (!devUrl) installProductionPolicy();
     registerIpc(shell);
     registerWindowIpc();
+    void warmContextMenu();
     manager = createWindow(false);
     manager.on('closed', () => {
       manager = null;
       if (sourcesWindow && !sourcesWindow.isDestroyed()) sourcesWindow.close();
     });
+  });
+  app.on('before-quit', () => {
+    void shutdownContextMenu();
   });
   app.on('window-all-closed', () => {
     app.quit();

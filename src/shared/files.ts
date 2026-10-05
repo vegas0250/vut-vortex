@@ -7,6 +7,14 @@ export interface FileEntry {
   size: number | null;
   modified: number | null;
   hidden: boolean;
+  system: boolean;
+}
+
+/** A system file stays hidden until system files are shown, even when ordinary hidden files are visible. */
+export function includeListed(hidden: boolean, system: boolean, showHidden: boolean, showSystem: boolean): boolean {
+  if (system && !showSystem) return false;
+  if (hidden && !showHidden) return false;
+  return true;
 }
 
 export interface DirectoryPage {

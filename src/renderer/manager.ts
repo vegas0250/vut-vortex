@@ -6,12 +6,13 @@ import 'vui/button';
 import 'vui/input';
 import 'vui/dialog';
 import 'vui/text';
-import 'vui/nav';
 import 'vui/empty';
 import 'vui/tabs';
 import 'vui/menu';
-import 'vui/icon';
+import { registerIcon } from 'vui/icon';
+import { registerMenuIcons } from './menu-icons';
 import 'vui/icon-button';
+import 'vui/toggle';
 import 'vui/progress';
 import 'vui/path-bar';
 import { CommandRegistry, ShortcutRegistry, writeClipboard } from 'vui/interaction';
@@ -22,6 +23,7 @@ import type { VDialog } from 'vui/dialog';
 import type { VInput } from 'vui/input';
 import type { VPathBar } from 'vui/path-bar';
 import type { VMenu } from 'vui/menu';
+import type { VToggle } from 'vui/toggle';
 import { mountChrome, restoreTheme } from './chrome';
 import {
   clipLabel,
@@ -39,7 +41,9 @@ import {
   type FileEntry,
   type Place,
 } from '../shared/files';
-import type { ContextAction, OpenedSource, Result, ShellMenuNode, SourceKind, SourceRequest } from '../shared/ipc';
+import { classifySelection, systemMenuItems, type ContextMenuItem, type ContextMenuModel, type ContextMenuQuery } from '../shared/context-menu';
+import type { OpenedSource, Result, SourceKind, SourceRequest } from '../shared/ipc';
+import { commandFromMenuEvent, createContextMenuController, traceMenu } from './context-menu';
 
 interface Session extends SourceRequest {
   id: string;
@@ -47,15 +51,34 @@ interface Session extends SourceRequest {
   historyIndex: number;
 }
 
+const filledFolder = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 6.75A2.75 2.75 0 0 1 5.75 4h3.19c.6 0 1.17.24 1.59.66l1.06 1.06c.1.1.24.16.38.16h6.28A2.75 2.75 0 0 1 21 8.63v8.62A2.75 2.75 0 0 1 18.25 21H5.75A2.75 2.75 0 0 1 3 18.25V6.75Z"/></svg>`;
+const windowsMark = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M2 3h9.2v8.2H2V3zm10.8 0H22v8.2h-9.2V3zM2 12.8h9.2V21H2v-8.2zm10.8 0H22V21h-9.2v-8.2z"/></svg>`;
+const penguinMark = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 1.6c-1.5.7-2.6 2.1-3 3.8-.2.8-.7 1.5-1.5 2-1.6 1-2.7 2.7-2.7 4.8 0 3.6 2.8 6.4 6.5 6.6l-.5 2c-.1.5.2.9.7.9h1c.5 0 .8-.4.7-.9l-.5-2c3.7-.2 6.5-3 6.5-6.6 0-2.1-1.1-3.8-2.7-4.8-.8-.5-1.3-1.2-1.5-2-.4-1.7-1.5-3.1-3-3.8-.4-.2-.8-.2-1.2 0z"/><path fill="currentColor" d="M7.1 7.4c1.1-1.5 2.6-2.3 4-2.2-.6 1.3-.4 2.6.3 3.6-1.4.3-2.7.9-3.8 1.8-.3-.9-.4-2-.5-3.2zM16.9 7.4c-1.1-1.5-2.6-2.3-4-2.2.6 1.3.4 2.6-.3 3.6 1.4.3 2.7.9 3.8 1.8.3-.9.4-2 .5-3.2z"/><circle cx="9.7" cy="10.6" r=".7" fill="var(--vui-color-background)"/><circle cx="14.3" cy="10.6" r=".7" fill="var(--vui-color-background)"/><path fill="var(--vui-color-background)" d="M12 12.4c1.5 0 2.6 1 2.9 2 .1.4-.2.7-.6.7h-4.6c-.4 0-.7-.3-.6-.7.3-1 1.4-2 2.9-2z"/></svg>`;
+const osMark = navigator.userAgent.includes('Windows') ? 'os-windows' : 'os-linux';
+
+function menuNotice(id: string, label: string, icon?: string): ContextMenuItem {
+  return { id, label, source: 'extension', enabled: false, icon };
+}
+
+function visibleSystemMenu(items: readonly ContextMenuItem[]): ContextMenuItem[] {
+  const system = systemMenuItems(items);
+  return system.length ? system : [menuNotice('system-empty', 'Нет системных команд')];
+}
+
 export function mountManager(): void {
+  registerMenuIcons();
+  registerIcon('folder', filledFolder);
+  registerIcon('os-windows', windowsMark);
+  registerIcon('os-linux', penguinMark);
   restoreTheme();
   const app = document.querySelector('#app');
   if (!app) throw new Error('Не найдено окно приложения');
-  const bar = mountChrome(app, 'Vortex', 'folder', window.vortex);
+  const bar = mountChrome(app, 'Vortex', osMark, window.vortex);
 
   const shell = document.createElement('vui-shell');
   shell.setAttribute('label', 'Vortex');
-  shell.setAttribute('nav-label', 'Быстрые ссылки');
+  shell.setAttribute('collapsed', '');
+  shell.setAttribute('nav-label', 'Места');
   shell.setAttribute('aside-label', 'Вторая панель');
   shell.setAttribute('skip-label', 'К списку файлов');
   shell.setAttribute('aside-collapsed', '');
@@ -95,11 +118,14 @@ export function mountManager(): void {
     forward: VIconButton;
     up: VIconButton;
     refresh: VIconButton;
+    links: HTMLElement;
+    menus: Map<string, VMenu>;
+    side: 'left' | 'right';
     path: VPathBar;
     bar: HTMLElement;
   }
 
-  function makePaneNav(label: string): PaneNav {
+  function makePaneNav(label: string, which: 'left' | 'right'): PaneNav {
     const bar = document.createElement('vui-toolbar');
     bar.setAttribute('label', label);
     const back = iconButton('Назад', 'arrow-left');
@@ -108,12 +134,14 @@ export function mountManager(): void {
     const refresh = iconButton('Обновить', 'refresh-cw');
     const pathBox = document.createElement('vui-path-bar') as VPathBar;
     pathBox.setAttribute('label', 'Адрес');
-    bar.append(back, forward, up, refresh, pathBox);
-    return { back, forward, up, refresh, path: pathBox, bar };
+    const links = document.createElement('div');
+    links.className = 'nav-links';
+    bar.append(back, forward, up, refresh, pathBox, links);
+    return { back, forward, up, refresh, links, menus: new Map(), side: which, path: pathBox, bar };
   }
 
-  const leftNav = makePaneNav('Навигация');
-  const rightNav = makePaneNav('Навигация второй панели');
+  const leftNav = makePaneNav('Навигация', 'left');
+  const rightNav = makePaneNav('Навигация второй панели', 'right');
   const viewButton = button('Показать', 'eye', 'end');
   viewButton.setAttribute('aria-haspopup', 'menu');
   viewButton.setAttribute('aria-expanded', 'false');
@@ -123,70 +151,22 @@ export function mountManager(): void {
   viewButton.append(caret);
   const viewMenu = document.createElement('vui-menu') as VMenu;
   viewMenu.setAttribute('label', 'Показать');
-  const previewItem = document.createElement('vui-menu-item');
-  previewItem.setAttribute('label', 'Предпросмотр');
-  const viewSplit = document.createElement('hr');
   const hiddenItem = document.createElement('vui-menu-item');
   hiddenItem.setAttribute('label', 'Скрытые');
+  const systemItem = document.createElement('vui-menu-item');
+  systemItem.setAttribute('label', 'Системные файлы');
   const extensionItem = document.createElement('vui-menu-item');
   extensionItem.setAttribute('label', 'Расширения файлов');
   extensionItem.setAttribute('checked', '');
-  viewMenu.append(previewItem, viewSplit, hiddenItem, extensionItem);
-  commandBar.append(viewButton);
-
-  const nav = document.createElement('div');
-  nav.setAttribute('slot', 'nav');
-  nav.className = 'nav-block';
-  const placesLabel = document.createElement('vui-text');
-  placesLabel.setAttribute('variant', 'label');
-  placesLabel.setAttribute('muted', '');
-  placesLabel.textContent = 'Быстрые ссылки';
-  const placesNav = document.createElement('vui-nav');
-  placesNav.setAttribute('label', 'Быстрые ссылки');
-  const navSplit = document.createElement('hr');
-  const navPlaces = document.createElement('div');
-  navPlaces.className = 'nav-places';
-
-  function makeDisclosure(icon: string, id: string): { block: HTMLElement; nav: HTMLElement; label: HTMLElement } {
-    const block = document.createElement('div');
-    block.className = 'nav-group';
-    block.hidden = true;
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'nav-group-toggle';
-    toggle.setAttribute('aria-expanded', 'false');
-    toggle.setAttribute('aria-controls', id);
-    const caret = document.createElement('vui-icon');
-    caret.setAttribute('name', 'chevron-right');
-    caret.className = 'caret';
-    const mark = document.createElement('vui-icon');
-    mark.setAttribute('name', icon);
-    const label = document.createElement('span');
-    toggle.append(caret, mark, label);
-    const list = document.createElement('vui-nav');
-    list.id = id;
-    list.hidden = true;
-    block.append(toggle, list);
-    toggle.addEventListener('click', () => {
-      const open = toggle.getAttribute('aria-expanded') !== 'true';
-      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-      list.hidden = !open;
-    });
-    return { block, nav: list, label };
-  }
-
-  const computer = makeDisclosure('hard-drive', 'vortex-computer');
-  const linux = makeDisclosure('terminal', 'vortex-linux');
-  const networkNav = document.createElement('vui-nav');
-  networkNav.setAttribute('label', 'Сеть');
-  networkNav.hidden = true;
-  const yandexNav = document.createElement('vui-nav');
-  yandexNav.setAttribute('label', 'Яндекс.Диск');
-  yandexNav.hidden = true;
-  navPlaces.append(computer.block, networkNav, linux.block, yandexNav);
-  nav.append(placesLabel, placesNav, navSplit, navPlaces);
-  const linuxNav = linux.nav;
-  const rootsNav = computer.nav;
+  viewMenu.append(hiddenItem, systemItem, extensionItem);
+  const previewToggle = document.createElement('vui-toggle') as VToggle;
+  previewToggle.className = 'preview-toggle';
+  previewToggle.setAttribute('slot', 'end');
+  previewToggle.setAttribute('aria-label', 'Предпросмотр');
+  const previewIcon = document.createElement('vui-icon');
+  previewIcon.setAttribute('name', 'eye');
+  previewToggle.append(previewIcon, document.createTextNode('Предпросмотр'));
+  commandBar.append(previewToggle, viewButton);
 
   interface ResourceBar {
     bar: HTMLElement;
@@ -327,7 +307,7 @@ export function mountManager(): void {
   dialogOk.setAttribute('variant', 'primary');
   dialog.append(dialogText, dialogInput, dialogCancel, dialogOk);
 
-  shell.append(commandBar, nav, stage, status, rightStage, dialog);
+  shell.append(commandBar, stage, status, rightStage, dialog);
   document.body.append(viewMenu);
   app.append(shell);
   shell.addEventListener('aside-toggle', (event) => {
@@ -348,6 +328,7 @@ export function mountManager(): void {
     source: null as SourceRequest | null,
   };
   let showHidden = false;
+  let showSystem = false;
   let showExtensions = true;
   let showPreview = false;
   let busy = false;
@@ -355,8 +336,14 @@ export function mountManager(): void {
   let blocking = 0;
   let leftTicket = 0;
   let rightTicket = 0;
-  let shellChosen = false;
-  let shellQuiet = false;
+  let held: { mode: 'copy' | 'move'; paths: string[] } | null = null;
+  let menuMemory: { key: string; at: number; model: ContextMenuModel } | null = null;
+  let menuSerial = 0;
+  let menuAction: { which: 'left' | 'right'; entries: FileEntry[]; session: string; x: number; y: number } | null = null;
+  let closeContextMenu = (): void => undefined;
+  let leaveMenuContext = (): void => undefined;
+  let openFileMenu: (x: number, y: number, items: ContextMenuModel['items']) => number = () => 0;
+  let replaceFileMenu: (ticket: number, items: ContextMenuModel['items']) => void = () => undefined;
   const overlayTimer = { left: 0, right: 0 };
   let computerName = 'Этот компьютер';
 
@@ -408,7 +395,10 @@ export function mountManager(): void {
     rightNav.up.disabled = busy || !right.page?.parent;
     rightNav.refresh.disabled = busy || !right.page;
     rightNav.path.disabled = !right.page;
+    for (const link of Array.from(leftNav.links.querySelectorAll('vui-button'))) link.toggleAttribute('disabled', busy || !local);
+    for (const link of Array.from(rightNav.links.querySelectorAll('vui-button'))) link.toggleAttribute('disabled', busy);
     viewButton.disabled = busy || !local;
+    previewToggle.disabled = busy || !local;
     const flags: Record<string, boolean> = {
       'file.open': Boolean(local && selected.length === 1 && !busy),
       'file.rename': Boolean(local && mutable.length === 1 && !busy),
@@ -423,7 +413,7 @@ export function mountManager(): void {
   }
 
   function tabIcon(kind: Session['kind']): string {
-    if (kind === 'local') return 'folder';
+    if (kind === 'local') return osMark;
     if (kind === 'ssh') return 'terminal';
     if (kind === 'ftp') return 'globe';
     return 'server';
@@ -444,7 +434,7 @@ export function mountManager(): void {
       tab.dataset.id = session.id;
       fillTab(tab, session);
       tab.setAttribute('close-label', 'Закрыть');
-      if (sessions.length > 1) tab.setAttribute('closable', '');
+      tab.setAttribute('closable', '');
       if (session.id === activeId) tab.setAttribute('selected', '');
       tabs.append(tab);
     }
@@ -454,62 +444,130 @@ export function mountManager(): void {
   function showAddress(field: VPathBar, target: string): void {
     field.value = target;
     field.crumbs = crumbs(target);
+    paintQuickLinks();
   }
 
-  function placeItem(place: Place, selected: boolean, pinned = false): HTMLElement {
-    const item = document.createElement('vui-nav-item');
-    item.setAttribute('data-path', place.path);
-    const icon = document.createElement('vui-icon');
-    icon.setAttribute('name', placeIcon(place.id));
-    const label = document.createElement('span');
-    label.className = 'nav-label';
-    label.textContent = place.label;
-    item.append(icon, label);
-    if (pinned) {
-      const pin = document.createElement('vui-icon');
-      pin.setAttribute('name', 'pin');
-      pin.className = 'nav-pin';
-      pin.setAttribute('label', 'Закреплено');
-      item.append(pin);
+  interface LinkGroup {
+    id: string;
+    label: string;
+    icon: string;
+    places: Place[];
+  }
+
+  let linkGroups: LinkGroup[] = [];
+
+  function fillPlacesMenu(menu: VMenu, current: string): void {
+    menu.replaceChildren();
+    if (!linkGroups.length) {
+      const empty = document.createElement('vui-menu-item');
+      empty.setAttribute('label', 'Нет ссылок');
+      empty.setAttribute('disabled', '');
+      menu.append(empty);
+      return;
     }
-    if (selected) item.setAttribute('selected', '');
-    return item;
+    linkGroups.forEach((group, index) => {
+      if (index > 0) menu.append(document.createElement('hr'));
+      const heading = document.createElement('vui-menu-item');
+      heading.className = 'nav-heading';
+      heading.setAttribute('label', group.label);
+      heading.setAttribute('icon', group.icon);
+      heading.setAttribute('disabled', '');
+      heading.dataset.heading = group.id;
+      menu.append(heading);
+      for (const place of group.places) {
+        const item = document.createElement('vui-menu-item');
+        item.setAttribute('label', place.label);
+        item.dataset.path = place.path;
+        const icon = placeIcon(place.id);
+        if (icon) item.setAttribute('icon', icon);
+        if (place.path === current) item.setAttribute('checked', '');
+        menu.append(item);
+      }
+    });
   }
 
-  function fillNav(host: HTMLElement, places: Place[], current: string, pinned = false): void {
-    host.replaceChildren();
-    host.hidden = places.length === 0;
-    for (const place of places) host.append(placeItem(place, place.path === current, pinned));
+  function markCurrentPlace(menu: VMenu, current: string): void {
+    for (const item of Array.from(menu.querySelectorAll<HTMLElement>('vui-menu-item'))) {
+      const path = item.dataset.path ?? '';
+      item.toggleAttribute('checked', path.length > 0 && path === current);
+    }
   }
 
-  function fillGroup(
-    group: { block: HTMLElement; nav: HTMLElement; label: HTMLElement },
-    title: string,
-    places: Place[],
-    current: string,
-  ): void {
-    group.label.textContent = title;
-    group.nav.setAttribute('label', title);
-    group.block.hidden = places.length === 0;
-    const open = group.block.querySelector('.nav-group-toggle')?.getAttribute('aria-expanded') === 'true';
-    group.nav.replaceChildren();
-    for (const place of places) group.nav.append(placeItem(place, place.path === current));
-    group.nav.hidden = places.length === 0 || !open;
+  function closeLinkMenus(): void {
+    for (const nav of [leftNav, rightNav]) {
+      for (const menu of nav.menus.values()) {
+        if (menu.hasAttribute('open')) menu.close();
+      }
+    }
+  }
+
+  function paintPaneLinks(nav: PaneNav, current: string): void {
+    const signature = linkGroups.map((group) => `${group.id}:${group.label}:${group.places.map((place) => `${place.path}\u0000${place.label}`).join('|')}`).join(';');
+    let menu = nav.menus.get('places');
+    if (nav.links.dataset.signature !== signature || !menu) {
+      nav.links.dataset.signature = signature;
+      for (const open of nav.menus.values()) open.remove();
+      nav.menus.clear();
+      nav.links.replaceChildren();
+      const trigger = document.createElement('vui-button') as VButton;
+      trigger.setAttribute('variant', 'ghost');
+      trigger.setAttribute('size', 'small');
+      trigger.setAttribute('aria-label', 'Переходы');
+      trigger.setAttribute('title', 'Переходы');
+      trigger.setAttribute('aria-haspopup', 'menu');
+      trigger.setAttribute('aria-expanded', 'false');
+      const mark = document.createElement('vui-icon');
+      mark.setAttribute('slot', 'icon');
+      mark.setAttribute('name', osMark);
+      const caret = document.createElement('vui-icon');
+      caret.setAttribute('name', 'chevron-down');
+      caret.style.color = 'var(--vui-color-text-muted)';
+      trigger.append(mark, caret);
+      menu = document.createElement('vui-menu') as VMenu;
+      menu.setAttribute('label', 'Переходы');
+      document.body.append(menu);
+      nav.menus.set('places', menu);
+      menu.addEventListener('close', () => trigger.setAttribute('aria-expanded', 'false'));
+      menu.addEventListener('click', (event) => {
+        const item = event.composedPath().find((node): node is HTMLElement => node instanceof HTMLElement && node.tagName === 'VUI-MENU-ITEM');
+        const target = item?.dataset.path;
+        if (!target || item.dataset.heading || item.hasAttribute('disabled')) return;
+        focusSide(nav.side);
+        void openDirectory(target, true);
+      });
+      trigger.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeContextMenu();
+        closeLinkMenus();
+        trigger.setAttribute('aria-expanded', 'true');
+        const rect = trigger.getBoundingClientRect();
+        window.setTimeout(() => menu?.showAt(rect.left, rect.bottom), 0);
+      });
+      nav.links.append(trigger);
+      fillPlacesMenu(menu, current);
+      return;
+    }
+    markCurrentPlace(menu, current);
+  }
+
+  function paintQuickLinks(): void {
+    paintPaneLinks(leftNav, page?.path ?? '');
+    paintPaneLinks(rightNav, right.page?.path ?? '');
   }
 
   function renderSidebar(index: { places: Place[]; roots: Place[]; computer: string }, current: string): void {
-    const pins = index.places.filter((place) => !place.group && place.id !== 'network' && place.id !== 'yandex');
-    fillNav(placesNav, pins, current, true);
-    navSplit.hidden = pins.length === 0;
     computerName = index.computer;
-    fillGroup(computer, index.computer, index.roots, current);
-    fillNav(networkNav, index.places.filter((place) => place.id === 'network'), current);
-    fillGroup(linux, 'Linux', index.places.filter((place) => place.group === 'linux'), current);
-    fillNav(yandexNav, index.places.filter((place) => place.id === 'yandex'), current);
-  }
-
-  function clearNavSelection(host: HTMLElement): void {
-    host.querySelectorAll('[selected]').forEach((item) => item.removeAttribute('selected'));
+    const quick = index.places.filter((place) => !place.group && place.id !== 'network' && place.id !== 'yandex');
+    linkGroups = [
+      { id: 'quick', label: 'Быстрые ссылки', icon: 'pin', places: quick },
+      { id: 'computer', label: index.computer || 'Компьютер', icon: 'hard-drive', places: index.roots },
+      { id: 'network', label: 'Сеть', icon: 'globe', places: index.places.filter((place) => place.id === 'network') },
+      { id: 'linux', label: 'Linux', icon: 'terminal', places: index.places.filter((place) => place.group === 'linux') },
+      { id: 'yandex', label: 'Яндекс.Диск', icon: 'server', places: index.places.filter((place) => place.id === 'yandex') },
+    ].filter((group) => group.places.length > 0);
+    paintPaneLinks(leftNav, page?.path || current);
+    paintPaneLinks(rightNav, right.page?.path ?? '');
   }
 
   function focusSide(next: 'left' | 'right'): void {
@@ -713,7 +771,7 @@ export function mountManager(): void {
     const bar = which === 'right' ? rightProgress : leftProgress;
     const overlay = which === 'right' ? rightOverlay : leftOverlay;
     window.clearTimeout(overlayTimer[which]);
-    overlay.hidden = true;
+    overlay.hidden = network;
     const ticket = ++loadSerial;
     if (which === 'right') rightTicket = ticket;
     else leftTicket = ticket;
@@ -732,9 +790,7 @@ export function mountManager(): void {
     busy = true;
     syncCommands();
     if (side === which) statusMain.textContent = 'Чтение каталога…';
-    overlayTimer[which] = window.setTimeout(() => {
-      overlay.hidden = false;
-    }, 140);
+    overlay.hidden = false;
     return ticket;
   }
 
@@ -753,10 +809,12 @@ export function mountManager(): void {
   }
 
   async function openSide(target: string, record: boolean): Promise<void> {
+    leaveMenuContext();
     const network = isNetworkRoot(target);
     const ticket = beginLoad('right', target);
+    let failed = '';
     try {
-      const next = unwrap(await window.vortex.list(target, showHidden));
+      const next = unwrap(await window.vortex.list(target, showHidden, showSystem));
       if (ticket !== rightTicket) return;
       const current = right.source;
       right.source = {
@@ -779,13 +837,15 @@ export function mountManager(): void {
     } catch (error) {
       if (ticket !== rightTicket) return;
       focusSide('right');
-      showError(error instanceof Error ? error.message : 'Не удалось открыть каталог');
+      failed = error instanceof Error ? error.message : 'Не удалось открыть каталог';
     } finally {
       finishLoad('right', ticket, network);
     }
+    if (failed) await reportOpenError('right', failed);
   }
 
   async function openDirectory(target: string, record: boolean): Promise<void> {
+    leaveMenuContext();
     if (side === 'right') {
       await openSide(target, record);
       return;
@@ -794,8 +854,9 @@ export function mountManager(): void {
     if (!session) return;
     const network = isNetworkRoot(target);
     const ticket = beginLoad('left', target);
+    let failed = '';
     try {
-      const next = unwrap(await window.vortex.list(target, showHidden));
+      const next = unwrap(await window.vortex.list(target, showHidden, showSystem));
       if (ticket !== leftTicket) return;
       if (record && session.history[session.historyIndex] !== next.path) {
         session.history.splice(session.historyIndex + 1);
@@ -805,13 +866,22 @@ export function mountManager(): void {
       renderPage(next);
     } catch (error) {
       if (ticket !== leftTicket) return;
-      showError(error instanceof Error ? error.message : 'Не удалось открыть каталог');
+      failed = error instanceof Error ? error.message : 'Не удалось открыть каталог';
     } finally {
       finishLoad('left', ticket, network);
     }
+    if (failed) await reportOpenError('left', failed);
+  }
+
+  async function reportOpenError(which: 'left' | 'right', message: string): Promise<void> {
+    const current = which === 'right' ? right.page : page;
+    statusMain.textContent = message;
+    if (!current) showError(message);
+    await ask({ title: 'Не удалось открыть', label: message, input: false, ok: 'Закрыть', alert: true });
   }
 
   async function showActive(): Promise<void> {
+    leaveMenuContext();
     const session = active();
     if (!session) return;
     side = 'left';
@@ -877,19 +947,21 @@ export function mountManager(): void {
     focusSide(restore);
   }
 
-  function ask(options: { title: string; label: string; value?: string; input: boolean; ok?: string }): Promise<string | null> {
+  function ask(options: { title: string; label: string; value?: string; input: boolean; ok?: string; alert?: boolean }): Promise<string | null> {
     dialog.label = options.title;
     dialogText.textContent = options.label;
     dialogInput.hidden = !options.input;
     dialogInput.label = options.label;
     dialogInput.value = options.value ?? '';
     dialogOk.textContent = options.ok ?? 'ОК';
+    dialogCancel.hidden = Boolean(options.alert);
     return new Promise((resolve) => {
       let answer: string | null = null;
       let settled = false;
       const finish = (): void => {
         if (settled) return;
         settled = true;
+        dialogCancel.hidden = false;
         dialogOk.removeEventListener('click', onOk);
         dialogCancel.removeEventListener('click', onCancel);
         dialog.removeEventListener('close', onClose);
@@ -932,34 +1004,6 @@ export function mountManager(): void {
     if (entry) await openEntry(entry);
   }
 
-  function openFromSidebar(target: string, host: HTMLElement): void {
-    for (const nav of [placesNav, rootsNav, networkNav, linuxNav, yandexNav]) {
-      if (nav !== host) clearNavSelection(nav);
-    }
-    focusSide('left');
-    void openDirectory(target, true);
-  }
-
-  placesNav.addEventListener('change', () => {
-    const target = placesNav.querySelector('[selected]')?.getAttribute('data-path');
-    if (target) openFromSidebar(target, placesNav);
-  });
-  networkNav.addEventListener('change', () => {
-    const target = networkNav.querySelector('[selected]')?.getAttribute('data-path');
-    if (target) openFromSidebar(target, networkNav);
-  });
-  linuxNav.addEventListener('change', () => {
-    const target = linuxNav.querySelector('[selected]')?.getAttribute('data-path');
-    if (target) openFromSidebar(target, linuxNav);
-  });
-  rootsNav.addEventListener('change', () => {
-    const target = rootsNav.querySelector('[selected]')?.getAttribute('data-path');
-    if (target) openFromSidebar(target, rootsNav);
-  });
-  yandexNav.addEventListener('change', () => {
-    const target = yandexNav.querySelector('[selected]')?.getAttribute('data-path');
-    if (target) openFromSidebar(target, yandexNav);
-  });
   function bindNav(nav: PaneNav, which: 'left' | 'right'): void {
     nav.back.addEventListener('click', () => {
       focusSide(which);
@@ -1017,20 +1061,25 @@ export function mountManager(): void {
   viewButton.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
-    previewItem.toggleAttribute('checked', showPreview);
     hiddenItem.toggleAttribute('checked', showHidden);
+    systemItem.toggleAttribute('checked', showSystem);
     extensionItem.toggleAttribute('checked', showExtensions);
     viewButton.setAttribute('aria-expanded', 'true');
+    closeContextMenu();
     const rect = viewButton.getBoundingClientRect();
     window.setTimeout(() => viewMenu.showAt(rect.left, rect.bottom), 0);
   });
-  previewItem.addEventListener('click', () => {
-    showPreview = !showPreview;
+  previewToggle.addEventListener('change', () => {
+    showPreview = previewToggle.pressed;
     syncPreview('left');
     syncPreview('right');
   });
   hiddenItem.addEventListener('click', () => {
     showHidden = !showHidden;
+    void reloadBoth();
+  });
+  systemItem.addEventListener('click', () => {
+    showSystem = !showSystem;
     void reloadBoth();
   });
   extensionItem.addEventListener('click', () => {
@@ -1105,82 +1154,130 @@ export function mountManager(): void {
     await openDirectory(entry.path, true);
   }
 
-  function menuPaths(entries: readonly FileEntry[]): string[] {
-    const files = entries.filter((entry) => entry.name !== '.' && entry.name !== '..').map((entry) => entry.path);
-    if (files.length) return files;
-    const parent = entries.find((entry) => entry.name === '..');
-    return parent ? [parent.path] : [];
+  function menuKey(query: ContextMenuQuery): string {
+    return JSON.stringify(query);
   }
 
-  function paintShellMenu(host: VMenu, nodes: readonly ShellMenuNode[]): void {
-    host.replaceChildren();
-    for (const node of nodes) {
-      if (node.separator) {
-        host.append(document.createElement('hr'));
-        continue;
-      }
-      const item = document.createElement('vui-menu-item');
-      item.setAttribute('label', node.label);
-      if (node.shortcut) item.setAttribute('shortcut', node.shortcut);
-      if (node.disabled) item.setAttribute('disabled', '');
-      if (node.checked) item.setAttribute('checked', '');
-      if (node.children.length > 0) {
-        const nested = document.createElement('vui-menu') as VMenu;
-        nested.setAttribute('slot', 'submenu');
-        nested.setAttribute('label', node.label);
-        paintShellMenu(nested, node.children);
-        item.append(nested);
-      } else if (node.command !== null) {
-        item.dataset.shell = String(node.command);
-      }
-      host.append(item);
+  function cachedMenu(key: string): ContextMenuModel | null {
+    if (!menuMemory || menuMemory.key !== key) return null;
+    if (performance.now() - menuMemory.at > 15_000) {
+      menuMemory = null;
+      return null;
     }
+    return menuMemory.model;
   }
 
-  async function openSystemMenu(entries: readonly FileEntry[], x: number, y: number, extended = false): Promise<void> {
-    if (busy) return;
-    const directory = currentPage()?.path ?? '';
-    if (!entries.length && !directory) return;
-    const mutable = entries.filter(canChange);
-    const intact = entries.length > 0 && mutable.length === entries.length;
-    const request = {
-      x,
-      y,
-      kind: 'local' as const,
-      open: entries.length === 1,
-      rename: entries.length === 1 && intact,
-      transfer: intact && mutable.length > 0,
-      remove: intact && mutable.length > 0,
-      paths: menuPaths(entries),
+  function queryFor(
+    which: 'left' | 'right',
+    entries: readonly FileEntry[],
+    extended: boolean,
+    classic = false,
+  ): ContextMenuQuery {
+    const kind = paneKind(which);
+    const directory = (which === 'right' ? right.page : page)?.path ?? '';
+    const chosen = entries.filter((entry) => entry.name !== '.' && entry.name !== '..');
+    const target = classifySelection(chosen, directory);
+    const mutable = chosen.filter(canChange);
+    const intact = chosen.length > 0 && mutable.length === chosen.length;
+    const single = chosen.length === 1 ? chosen[0] : undefined;
+    return {
+      target,
+      folders: chosen.filter((entry) => entry.kind === 'directory').map((entry) => entry.path),
       directory,
       extended,
+      classic,
+      kind,
+      flags: {
+        open: Boolean(single),
+        openTab: Boolean(kind === 'local' && single?.kind === 'directory'),
+        copy: kind === 'local' && intact,
+        cut: kind === 'local' && intact,
+        paste: kind === 'local' && Boolean(held?.paths.length) && Boolean(directory),
+        rename: kind === 'local' && chosen.length === 1 && intact,
+        remove: kind === 'local' && intact,
+        create: kind === 'local' && Boolean(directory),
+        transfer: intact,
+      },
     };
-    shellQuiet = true;
-    shellHost.close();
-    shellQuiet = false;
-    const listed = await window.vortex.shellMenu(request);
-    if (!listed.ok) {
-      statusMain.textContent = listed.message;
+  }
+
+  function runMenuCommand(command: string, which: 'left' | 'right', entries: readonly FileEntry[]): void {
+    const chosen = entries.filter((entry) => entry.name !== '.' && entry.name !== '..');
+    if (command === 'vortex:open') {
+      const entry = chosen[0];
+      if (entry) void openEntry(entry);
       return;
     }
-    if (listed.value?.length) {
-      paintShellMenu(shellHost, listed.value);
-      shellChosen = false;
-      shellHost.showAt(x, y);
+    if (command === 'vortex:open-tab') {
+      const entry = chosen[0];
+      if (!entry || entry.kind !== 'directory') return;
+      addSession({ kind: 'local', label: entry.name, path: entry.path, host: '', port: 0, user: '' });
       return;
     }
-    const result = await window.vortex.contextMenu(request);
-    if (!result.ok) {
-      statusMain.textContent = result.message;
+    if (command === 'vortex:copy' || command === 'vortex:cut') {
+      const paths = chosen.filter(canChange).map((entry) => entry.path);
+      if (!paths.length) return;
+      held = { mode: command === 'vortex:cut' ? 'move' : 'copy', paths };
+      statusMain.textContent = command === 'vortex:cut' ? 'Вырезано' : 'Скопировано';
       return;
     }
-    const action: ContextAction | null = result.value;
-    const entry = entries[0];
-    if (action === 'open' && entry) await openEntry(entry);
-    if (action === 'rename') renameEntries(entries);
-    if (action === 'copy') copyEntries(entries);
-    if (action === 'move') moveEntries(entries);
-    if (action === 'delete') deleteEntries(entries);
+    if (command === 'vortex:paste') {
+      const clip = held;
+      const destination = (which === 'right' ? right.page : page)?.path;
+      if (!clip || !destination) return;
+      if (clip.mode === 'move') held = null;
+      transferPaths(clip.mode, clip.paths, destination);
+      return;
+    }
+    if (command === 'vortex:rename') {
+      renameEntries(chosen);
+      return;
+    }
+    if (command === 'vortex:delete') {
+      deleteEntries(chosen);
+      return;
+    }
+    if (command === 'vortex:create') {
+      const parent = (which === 'right' ? right.page : page)?.path;
+      if (!parent) return;
+      void runAction(async () => {
+        const name = await ask({ title: 'Создать папку', label: 'Имя', input: true, value: '' });
+        if (!name) return false;
+        unwrap(await window.vortex.mkdir(parent, name));
+        return true;
+      });
+      return;
+    }
+    if (command === 'vortex:properties') {
+      const entry = chosen[0];
+      const directory = (which === 'right' ? right.page : page)?.path ?? '';
+      const label = entry
+        ? `Имя: ${entry.name} · Путь: ${entry.path} · Тип: ${kindLabel(entry.kind)} · Размер: ${formatSize(entry.size, entry.kind) || '—'}`
+        : `Путь: ${directory}`;
+      void ask({ title: 'Свойства', label, input: false, ok: 'Закрыть' });
+      return;
+    }
+    if (command === 'vortex:copy-address') {
+      const source = paneSource(which);
+      if (!source) return;
+      void writeClipboard({ text: resourceAddress(source) }).then(() => {
+        statusMain.textContent = 'Адрес скопирован';
+      });
+      return;
+    }
+    if (command === 'vortex:disconnect') {
+      disconnectPane(which);
+      return;
+    }
+    const pending: Record<string, string> = {
+      'vortex:terminal': 'Открыть терминал',
+      'vortex:download': 'Скачать',
+      'vortex:upload': 'Загрузить',
+      'vortex:move': 'Переместить',
+    };
+    const title = pending[command];
+    if (!title) return;
+    statusMain.textContent = `${paneKind(which).toUpperCase()}: «${title}» выполнится после подключения провайдера`;
   }
 
   function paneKind(which: 'left' | 'right'): SourceKind {
@@ -1226,65 +1323,66 @@ export function mountManager(): void {
     statusMain.textContent = 'Сессия отключена';
   }
 
-  async function openResourceMenu(
+  let prefetchTimer = 0;
+
+  function schedulePrefetch(which: 'left' | 'right'): void {
+    window.clearTimeout(prefetchTimer);
+    prefetchTimer = window.setTimeout(() => {
+      const view = which === 'right' ? rightGrid : grid;
+      const source = which === 'right' ? right.page : page;
+      const ids = new Set(view.selectedIds);
+      const entries = source?.entries.filter((entry) => ids.has(entry.path)) ?? [];
+      const query = queryFor(which, entries, false);
+      if (query.kind !== 'local') return;
+      const key = menuKey(query);
+      if (cachedMenu(key)) return;
+      const serial = ++menuSerial;
+      void window.vortex.contextMenuGet(query).then((listed) => {
+        if (serial !== menuSerial || !listed.ok) return;
+        menuMemory = { key, at: performance.now(), model: listed.value };
+      });
+    }, 150);
+  }
+
+  async function openContextMenu(
     which: 'left' | 'right',
-    kind: Exclude<SourceKind, 'local'>,
     entries: readonly FileEntry[],
     x: number,
     y: number,
+    extended = false,
+    classic = false,
   ): Promise<void> {
     if (busy) return;
-    const mutable = entries.filter(canChange);
-    const intact = entries.length > 0 && mutable.length === entries.length;
-    const result = await window.vortex.contextMenu({
-      x,
-      y,
-      kind,
-      open: entries.length === 1,
-      rename: entries.length === 1 && intact,
-      transfer: intact && mutable.length > 0,
-      remove: intact && mutable.length > 0,
-      paths: [],
-      directory: '',
-      extended: false,
-    });
-    if (!result.ok) {
-      statusMain.textContent = result.message;
+    window.clearTimeout(prefetchTimer);
+    const directory = (which === 'right' ? right.page : page)?.path ?? '';
+    if (!entries.length && !directory) return;
+    const started = performance.now();
+    traceMenu('requested', started);
+    const query = queryFor(which, entries, extended, classic);
+    const key = menuKey(query);
+    const cached = cachedMenu(key);
+    const ticket = openFileMenu(x, y, cached ? visibleSystemMenu(cached.items) : [menuNotice('menu-loading', 'Загрузка…', 'loader')]);
+    menuAction = { which, entries: [...entries], session: cached?.session ?? '', x, y };
+    if (cached) {
+      traceMenu('total duration', started);
       return;
     }
-    const action = result.value;
-    if (!action) return;
-    if (action === 'copy-address') {
-      const source = paneSource(which);
-      if (!source) return;
-      await writeClipboard({ text: resourceAddress(source) });
-      statusMain.textContent = 'Адрес скопирован';
+    const serial = ++menuSerial;
+    const listed = await window.vortex.contextMenuGet(query);
+    if (serial !== menuSerial) return;
+    if (!listed.ok) {
+      statusMain.textContent = listed.message;
+      replaceFileMenu(ticket, [menuNotice('system-error', listed.message || 'Меню недоступно')]);
       return;
     }
-    if (action === 'disconnect') {
-      disconnectPane(which);
-      return;
-    }
-    const names: Partial<Record<ContextAction, string>> = {
-      terminal: 'Открыть терминал',
-      download: 'Скачать',
-      upload: 'Загрузить',
-      open: 'Открыть',
-      rename: 'Переименовать',
-      copy: 'Копировать',
-      move: 'Переместить',
-      delete: 'Удалить',
-    };
-    statusMain.textContent = `${kind.toUpperCase()}: «${names[action] ?? action}» выполнится после подключения провайдера`;
+    menuMemory = { key, at: performance.now(), model: listed.value };
+    menuAction = { which, entries: [...entries], session: listed.value.session, x, y };
+    replaceFileMenu(ticket, visibleSystemMenu(listed.value.items));
+    traceMenu('total duration', started);
   }
 
   function openPaneMenu(which: 'left' | 'right', entries: readonly FileEntry[], x: number, y: number, extended = false): void {
-    const kind = paneKind(which);
-    if (kind === 'local') {
-      void openSystemMenu(entries, x, y, extended);
-      return;
-    }
-    void openResourceMenu(which, kind, entries, x, y);
+    void openContextMenu(which, entries, x, y, extended);
   }
 
 
@@ -1296,15 +1394,18 @@ export function mountManager(): void {
     void showActive();
   });
   tabs.addEventListener('close', (event) => {
+    event.stopPropagation();
     const tab = event.target;
     if (!(tab instanceof HTMLElement) || !tab.dataset.id) return;
-    if (sessions.length < 2) return;
     const index = sessions.findIndex((session) => session.id === tab.dataset.id);
     if (index < 0) return;
+    if (sessions.length < 2) {
+      window.vortex.close();
+      return;
+    }
     const removed = sessions[index];
-    if (!removed) return;
     sessions.splice(index, 1);
-    if (removed.id === activeId) activeId = sessions[Math.max(0, index - 1)]?.id ?? '';
+    if (removed?.id === activeId) activeId = (sessions[index] ?? sessions[index - 1])?.id ?? '';
     renderTabs();
     void showActive();
   });
@@ -1318,6 +1419,8 @@ export function mountManager(): void {
       statusEnd.textContent = count ? `Выбрано: ${count}` : (current?.path ?? '');
       syncPreview(which);
       syncCommands();
+      closeContextMenu();
+      schedulePrefetch(which);
     });
     view.addEventListener('dblclick', () => {
       focusSide(which);
@@ -1326,10 +1429,14 @@ export function mountManager(): void {
     view.addEventListener(
       'contextmenu',
       (event) => {
+        event.preventDefault();
         const row = event.composedPath().find((node): node is HTMLElement => node instanceof HTMLElement && node.getAttribute('role') === 'row');
         const id = row?.dataset.id;
-        if (!id) return;
-        event.preventDefault();
+        if (!id) {
+          focusSide(which);
+          openPaneMenu(which, [], event.clientX, event.clientY, event.shiftKey);
+          return;
+        }
         focusSide(which);
         if (!view.selectedIds.includes(id)) view.selectedIds = [id];
         syncPreview(which);
@@ -1358,31 +1465,49 @@ export function mountManager(): void {
   bindResourceMenu(leftBody, 'left');
   bindResourceMenu(rightBody, 'right');
 
-  const shellHost = document.createElement('vui-menu') as VMenu;
-  shellHost.setAttribute('label', 'Файл');
-  document.body.append(shellHost);
-  shellHost.addEventListener('click', (event) => {
-    const item = event.target;
-    if (!(item instanceof HTMLElement) || item.dataset.shell === undefined || item.hasAttribute('disabled')) return;
-    const command = Number(item.dataset.shell);
-    if (!Number.isInteger(command)) return;
-    shellChosen = true;
+  const fileMenuHost = document.createElement('vui-menu') as VMenu;
+  fileMenuHost.setAttribute('label', 'Файл');
+  document.body.append(fileMenuHost);
+  const fileMenu = createContextMenuController(fileMenuHost);
+  openFileMenu = (x, y, items) => fileMenu.openAt(x, y, items);
+  replaceFileMenu = (ticket, items) => fileMenu.replace(ticket, items);
+  closeContextMenu = () => fileMenu.close();
+  leaveMenuContext = () => {
+    menuSerial += 1;
+    menuMemory = null;
+    menuAction = null;
+    fileMenu.close();
+    void window.vortex.contextMenuDismiss();
+  };
+  fileMenuHost.addEventListener('click', (event) => {
+    const command = commandFromMenuEvent(event);
+    const action = menuAction;
+    if (!command || !action) return;
+    if (command.startsWith('vortex:')) {
+      runMenuCommand(command, action.which, action.entries);
+      return;
+    }
+    if (command === 'shell:classic') {
+      event.preventDefault();
+      event.stopPropagation();
+      void openContextMenu(action.which, action.entries, action.x, action.y, false, true);
+      return;
+    }
+    if (!action.session) return;
+    menuMemory = null;
     void (async () => {
-      const invoked = await window.vortex.shellInvoke(command);
+      const invoked = await window.vortex.contextMenuExecute({ session: action.session, commandId: command });
       if (!invoked.ok) {
         statusMain.textContent = invoked.message;
         return;
       }
-      if (invoked.value) await reload();
+      if (!invoked.value) {
+        statusMain.textContent = 'Команда недоступна';
+        return;
+      }
+      await reload();
     })();
   }, true);
-  shellHost.addEventListener('close', () => {
-    if (shellChosen || shellQuiet) {
-      shellChosen = false;
-      return;
-    }
-    void window.vortex.shellDismiss();
-  });
 
   const dropMenu = document.createElement('vui-menu') as VMenu;
   dropMenu.setAttribute('label', 'Перенос');
@@ -1529,6 +1654,7 @@ export function mountManager(): void {
     }
     if (drag.button === 2) {
       pendingDrop = { paths: drag.paths, destination };
+      closeContextMenu();
       dropMenu.showAt(event.clientX, event.clientY);
       return;
     }

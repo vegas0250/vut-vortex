@@ -5,20 +5,21 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { app, BrowserWindow, type WebContents } from 'electron';
 import source from './shell-menu.cs?raw';
-import type { ContextMenuRequest, ShellMenuNode } from '../../shared/ipc';
+import type { ShellMenuNode } from '../../shared/ipc';
 
 const compilers = [
   'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
   'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe',
 ];
 
-interface ShellSession {
+interface ShellProcess {
   child: ChildProcessWithoutNullStreams;
   nextLine: () => Promise<string | null>;
   error: string;
 }
 
-let active: ShellSession | null = null;
+let active: ShellProcess | null = null;
+let chain: Promise<unknown> = Promise.resolve();
 
 function compiler(): string | null {
   return compilers.find((item) => existsSync(item)) ?? null;
@@ -89,7 +90,41 @@ function lines(child: ChildProcessWithoutNullStreams): () => Promise<string | nu
   };
 }
 
-function ownerHandle(sender: WebContents): string {
+function exclusive<T>(task: () => Promise<T>): Promise<T> {
+  const next = chain.then(task, task);
+  chain = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+function alive(session: ShellProcess | null): session is ShellProcess {
+  return session !== null && session.child.exitCode === null && !session.child.killed;
+}
+
+async function ensure(): Promise<ShellProcess> {
+  if (alive(active)) return active;
+  active = null;
+  const executable = await helper();
+  const child = spawn(executable, ['serve'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const session: ShellProcess = { child, nextLine: lines(child), error: '' };
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk: string) => {
+    session.error += chunk;
+  });
+  child.on('exit', () => {
+    if (active === session) active = null;
+  });
+  child.stdin.setDefaultEncoding('utf8');
+  const ready = await session.nextLine();
+  if (ready !== 'ready') {
+    child.kill();
+    throw new Error(session.error.trim() || 'Системное меню не запустилось');
+  }
+  active = session;
+  return session;
+}
+
+export function ownerHandle(sender: WebContents | null): string {
+  if (!sender) return '0';
   const window = BrowserWindow.fromWebContents(sender);
   if (!window) return '0';
   const handle = window.getNativeWindowHandle();
@@ -97,7 +132,7 @@ function ownerHandle(sender: WebContents): string {
   return BigInt.asIntN(64, value).toString();
 }
 
-function nodesFrom(value: unknown): ShellMenuNode[] {
+export function nodesFrom(value: unknown): ShellMenuNode[] {
   if (!Array.isArray(value)) return [];
   const nodes: ShellMenuNode[] = [];
   for (const item of value) {
@@ -124,6 +159,7 @@ function nodesFrom(value: unknown): ShellMenuNode[] {
       disabled: record.disabled === true,
       checked: record.checked === true,
       command: children.length > 0 ? null : command,
+      verb: typeof record.verb === 'string' ? record.verb : '',
       children,
     });
   }
@@ -131,85 +167,82 @@ function nodesFrom(value: unknown): ShellMenuNode[] {
   return nodes;
 }
 
-function release(session: ShellSession | null): void {
-  if (!session) return;
-  try {
-    session.child.stdin.write('cancel\n');
-  } catch {
-    session.child.kill();
+async function exchange(payload: string[]): Promise<string | null> {
+  const session = await ensure();
+  session.child.stdin.write(`${payload.join('\n')}\n`);
+  const line = await session.nextLine();
+  if (line === null) {
+    active = null;
+    throw new Error(session.error.trim() || 'Системное меню закрылось');
   }
+  return line;
 }
 
-export async function readWindowsShellMenu(
-  request: ContextMenuRequest,
-  sender: WebContents,
-): Promise<ShellMenuNode[] | null> {
-  release(active);
-  active = null;
-  if (process.platform !== 'win32') return null;
-  const paths = request.paths.filter((item) => item.trim().length > 0);
-  const directory = request.directory.trim();
-  if (!paths.length && !directory) return null;
-  let executable: string;
-  try {
-    executable = await helper();
-  } catch (error) {
-    console.error(error);
-    return null;
-  }
-  const mode = paths.length ? 'files' : 'folder';
-  const targets = paths.length ? paths : [directory];
-  const child = spawn(executable, ['list'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-  const session: ShellSession = { child, nextLine: lines(child), error: '' };
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (chunk: string) => {
-    session.error += chunk;
+export interface ShellQuery {
+  paths: string[];
+  directory: string;
+  extended: boolean;
+  owner: string;
+}
+
+export async function warmShellHost(): Promise<void> {
+  if (process.platform !== 'win32') return;
+  await exclusive(async () => {
+    await ensure();
   });
-  child.stdin.setDefaultEncoding('utf8');
-  child.stdin.write([
-    `extended ${request.extended ? '1' : '0'}`,
-    `owner ${ownerHandle(sender)}`,
-    `mode ${mode}`,
-    ...targets.map((item) => `path ${item}`),
-    '.',
-    '',
-  ].join('\n'));
-  const line = await session.nextLine();
-  if (!line) {
-    console.error(session.error.trim() || 'Системное меню не вернуло пункты');
-    child.kill();
-    return null;
-  }
-  try {
-    const nodes = nodesFrom(JSON.parse(line) as unknown);
-    if (!nodes.length) {
-      release(session);
+}
+
+export async function queryShellHost(query: ShellQuery): Promise<ShellMenuNode[] | null> {
+  if (process.platform !== 'win32') return null;
+  return exclusive(async () => {
+    const paths = query.paths.filter((item) => item.trim().length > 0);
+    const directory = query.directory.trim();
+    if (!paths.length && !directory) return null;
+    const mode = paths.length ? 'files' : 'folder';
+    const targets = paths.length ? paths : [directory];
+    const line = await exchange([
+      'list',
+      `extended ${query.extended ? '1' : '0'}`,
+      `owner ${query.owner}`,
+      `mode ${mode}`,
+      ...targets.map((item) => `path ${item}`),
+      '.',
+    ]);
+    if (line === 'error' || !line) return null;
+    try {
+      const nodes = nodesFrom(JSON.parse(line) as unknown);
+      return nodes.length ? nodes : null;
+    } catch (error) {
+      console.error(error);
       return null;
     }
-    active = session;
-    return nodes;
-  } catch (error) {
-    console.error(error);
-    child.kill();
-    return null;
-  }
+  });
 }
 
-export async function invokeWindowsShellMenu(command: number): Promise<boolean> {
-  const session = active;
-  active = null;
-  if (!session || !Number.isInteger(command) || command < 0) return false;
-  try {
-    session.child.stdin.write(`invoke ${command}\n`);
-  } catch {
-    return false;
-  }
-  const line = await session.nextLine();
-  return line === 'invoked';
+export async function invokeShellHost(command: number): Promise<boolean> {
+  if (!Number.isInteger(command) || command < 0) return false;
+  return exclusive(async () => {
+    if (!alive(active)) return false;
+    const line = await exchange([`invoke ${command}`]);
+    return line === 'invoked';
+  });
 }
 
-export async function dismissWindowsShellMenu(): Promise<void> {
-  const session = active;
-  active = null;
-  release(session);
+export async function releaseShellHost(): Promise<void> {
+  await exclusive(async () => {
+    if (!alive(active)) return;
+    await exchange(['release']);
+  });
+}
+
+export async function shutdownShellHost(): Promise<void> {
+  await exclusive(async () => {
+    if (!alive(active)) return;
+    try {
+      active.child.stdin.write('quit\n');
+    } catch {
+      active.child.kill();
+    }
+    active = null;
+  });
 }

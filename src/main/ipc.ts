@@ -1,7 +1,9 @@
-import { BrowserWindow, Menu, ipcMain, type MenuItemConstructorOptions, type Shell, type WebContents } from 'electron';
-import { channels, failure, type ContextAction, type ContextMenuRequest, type Result } from '../shared/ipc';
+import { BrowserWindow, ipcMain, type Shell, type WebContents } from 'electron';
+import { readContextMenu, contextMenuService } from './context-menu';
+import { channels, failure, type Result } from '../shared/ipc';
+import type { ContextMenuExecuteRequest, ContextMenuFlags, ContextMenuQuery, ContextMenuTarget } from '../shared/context-menu';
+import { isVortexCommand } from '../shared/context-menu';
 import { copyPaths, createDirectory, listDirectory, locations, movePaths, removePaths, renamePath, absolutePath } from './filesystem/local';
-import { dismissWindowsShellMenu, invokeWindowsShellMenu, readWindowsShellMenu } from './platform/shell-menu';
 
 async function guard<T>(run: () => Promise<T>): Promise<Result<T>> {
   try {
@@ -12,90 +14,6 @@ async function guard<T>(run: () => Promise<T>): Promise<Result<T>> {
   }
 }
 
-function contextRequest(input: unknown): ContextMenuRequest {
-  if (!input || typeof input !== 'object') throw new Error('Некорректное меню');
-  const item = input as Partial<ContextMenuRequest>;
-  const x = Number(item.x);
-  const y = Number(item.y);
-  if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Некорректное меню');
-  const kind = item.kind;
-  if (kind !== 'local' && kind !== 'ssh' && kind !== 'sftp' && kind !== 'ftp') throw new Error('Некорректное меню');
-  const paths = item.paths;
-  if (paths != null && (!Array.isArray(paths) || paths.some((entry) => typeof entry !== 'string'))) {
-    throw new Error('Некорректное меню');
-  }
-  return {
-    x: Math.round(x),
-    y: Math.round(y),
-    kind,
-    open: item.open === true,
-    rename: item.rename === true,
-    transfer: item.transfer === true,
-    remove: item.remove === true,
-    paths: Array.isArray(paths) ? paths : [],
-    directory: typeof item.directory === 'string' ? item.directory : '',
-    extended: item.extended === true,
-  };
-}
-
-function contextTemplate(
-  request: ContextMenuRequest,
-  choose: (next: ContextAction) => () => void,
-): MenuItemConstructorOptions[] {
-  if (request.kind === 'ssh') {
-    return [
-      { label: 'Открыть терминал', click: choose('terminal') },
-      { label: 'Копировать адрес', click: choose('copy-address') },
-      { type: 'separator' },
-      { label: 'Отключиться', click: choose('disconnect') },
-    ];
-  }
-  if (request.kind === 'sftp' || request.kind === 'ftp') {
-    const title = request.kind === 'sftp' ? 'SFTP' : 'FTP';
-    return [
-      { label: 'Открыть', enabled: request.open, click: choose('open') },
-      { label: 'Скачать', enabled: request.transfer, click: choose('download') },
-      { label: `Загрузить в ${title}`, click: choose('upload') },
-      { type: 'separator' },
-      { label: 'Переименовать', enabled: request.rename, click: choose('rename') },
-      { label: 'Копировать', enabled: request.transfer, click: choose('copy') },
-      { label: 'Переместить', enabled: request.transfer, click: choose('move') },
-      { type: 'separator' },
-      { label: 'Удалить', enabled: request.remove, click: choose('delete') },
-      { type: 'separator' },
-      { label: 'Копировать адрес', click: choose('copy-address') },
-      { label: 'Отключиться', click: choose('disconnect') },
-    ];
-  }
-  return [
-    { label: 'Открыть', enabled: request.open, click: choose('open') },
-    { type: 'separator' },
-    { label: 'Переименовать', enabled: request.rename, click: choose('rename') },
-    { label: 'Копировать', enabled: request.transfer, click: choose('copy') },
-    { label: 'Переместить', enabled: request.transfer, click: choose('move') },
-    { type: 'separator' },
-    { label: 'Удалить', enabled: request.remove, click: choose('delete') },
-  ];
-}
-
-function popupContextMenu(request: ContextMenuRequest, sender: WebContents): Promise<ContextAction | null> {
-  const window = BrowserWindow.fromWebContents(sender);
-  if (!window) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    let action: ContextAction | null = null;
-    const choose = (next: ContextAction) => () => {
-      action = next;
-    };
-    const menu = Menu.buildFromTemplate(contextTemplate(request, choose));
-    menu.popup({
-      window,
-      x: request.x,
-      y: request.y,
-      callback: () => resolve(action),
-    });
-  });
-}
-
 function strings(input: unknown): unknown[] {
   if (!Array.isArray(input) || input.some((item) => typeof item !== 'string')) {
     throw new Error('Ожидался список путей');
@@ -103,16 +21,83 @@ function strings(input: unknown): unknown[] {
   return input;
 }
 
+function stringList(input: unknown): string[] {
+  if (!Array.isArray(input) || input.some((item) => typeof item !== 'string')) {
+    throw new Error('Некорректное меню');
+  }
+  return input;
+}
+
+function flags(input: unknown): ContextMenuFlags {
+  const record = input && typeof input === 'object' ? input as Partial<ContextMenuFlags> : {};
+  return {
+    open: record.open === true,
+    openTab: record.openTab === true,
+    copy: record.copy === true,
+    cut: record.cut === true,
+    paste: record.paste === true,
+    rename: record.rename === true,
+    remove: record.remove === true,
+    create: record.create === true,
+    transfer: record.transfer === true,
+  };
+}
+
+function target(input: unknown, directory: string): ContextMenuTarget {
+  if (!input || typeof input !== 'object') throw new Error('Некорректное меню');
+  const record = input as { type?: unknown; paths?: unknown; directory?: unknown };
+  if (record.type === 'background') {
+    const place = typeof record.directory === 'string' ? record.directory : directory;
+    return { type: 'background', directory: place };
+  }
+  if (record.type !== 'file' && record.type !== 'folder' && record.type !== 'mixed') {
+    throw new Error('Некорректное меню');
+  }
+  return { type: record.type, paths: stringList(record.paths) };
+}
+
+export function contextQuery(input: unknown): ContextMenuQuery {
+  if (!input || typeof input !== 'object') throw new Error('Некорректное меню');
+  const item = input as Partial<ContextMenuQuery>;
+  const kind = item.kind;
+  if (kind !== 'local' && kind !== 'ssh' && kind !== 'sftp' && kind !== 'ftp') throw new Error('Некорректное меню');
+  const directory = typeof item.directory === 'string' ? item.directory : '';
+  return {
+    target: target(item.target, directory),
+    folders: stringList(item.folders ?? []),
+    directory,
+    extended: item.extended === true,
+    classic: item.classic === true,
+    kind,
+    flags: flags(item.flags),
+  };
+}
+
+export function executeRequest(input: unknown): ContextMenuExecuteRequest {
+  if (!input || typeof input !== 'object') throw new Error('Некорректная команда меню');
+  const item = input as Partial<ContextMenuExecuteRequest>;
+  if (typeof item.session !== 'string' || typeof item.commandId !== 'string') throw new Error('Некорректная команда меню');
+  if (!item.session.startsWith('ses:') || item.session.length > 80) throw new Error('Некорректная команда меню');
+  if (!item.commandId.startsWith('sys:') || item.commandId.length > 80 || isVortexCommand(item.commandId)) {
+    throw new Error('Некорректная команда меню');
+  }
+  return { session: item.session, commandId: item.commandId };
+}
+
+function senderWindow(sender: WebContents): WebContents | null {
+  return BrowserWindow.fromWebContents(sender) ? sender : null;
+}
+
 export function registerIpc(shell: Shell): void {
-  ipcMain.handle(channels.list, (_event, input: unknown, showHidden: unknown) =>
-    guard(() => listDirectory(input, showHidden === true)),
+  ipcMain.handle(channels.list, (_event, input: unknown, showHidden: unknown, showSystem: unknown) =>
+    guard(() => listDirectory(input, showHidden === true, showSystem === true)),
   );
   ipcMain.handle(channels.locations, () => guard(() => locations()));
   ipcMain.handle(channels.mkdir, (_event, parent: unknown, name: unknown) =>
     guard(() => createDirectory(parent, name)),
   );
-  ipcMain.handle(channels.rename, (_event, target: unknown, name: unknown) =>
-    guard(() => renamePath(target, name)),
+  ipcMain.handle(channels.rename, (_event, targetPath: unknown, name: unknown) =>
+    guard(() => renamePath(targetPath, name)),
   );
   ipcMain.handle(channels.remove, (_event, targets: unknown) => guard(() => removePaths(strings(targets))));
   ipcMain.handle(channels.copy, (_event, targets: unknown, destination: unknown) =>
@@ -121,28 +106,20 @@ export function registerIpc(shell: Shell): void {
   ipcMain.handle(channels.move, (_event, targets: unknown, destination: unknown) =>
     guard(() => movePaths(strings(targets), destination)),
   );
-  ipcMain.handle(channels.open, (_event, target: unknown) =>
+  ipcMain.handle(channels.open, (_event, opened: unknown) =>
     guard(async () => {
-      const opened = await shell.openPath(absolutePath(target));
-      if (opened) throw new Error(opened);
+      const result = await shell.openPath(absolutePath(opened));
+      if (result) throw new Error(result);
     }),
   );
-  ipcMain.handle(channels.contextMenu, (event, input: unknown) =>
-    guard(() => popupContextMenu(contextRequest(input), event.sender)),
+  ipcMain.handle(channels.contextMenuGet, (event, input: unknown) =>
+    guard(() => readContextMenu(contextQuery(input), senderWindow(event.sender))),
   );
-  ipcMain.handle(channels.shellMenu, (event, input: unknown) =>
-    guard(async () => {
-      const request = contextRequest(input);
-      if (request.kind !== 'local' || process.platform !== 'win32') return null;
-      return readWindowsShellMenu(request, event.sender);
-    }),
-  );
-  ipcMain.handle(channels.shellInvoke, (_event, command: unknown) =>
+  ipcMain.handle(channels.contextMenuExecute, (_event, input: unknown) =>
     guard(() => {
-      const id = Number(command);
-      if (!Number.isInteger(id) || id < 0) throw new Error('Некорректная команда меню');
-      return invokeWindowsShellMenu(id);
+      const request = executeRequest(input);
+      return contextMenuService().execute(request.session, request.commandId);
     }),
   );
-  ipcMain.handle(channels.shellDismiss, () => guard(() => dismissWindowsShellMenu()));
+  ipcMain.handle(channels.contextMenuDismiss, () => guard(() => contextMenuService().dismiss()));
 }

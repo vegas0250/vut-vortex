@@ -8,7 +8,7 @@ import type { VMenu } from 'vui/menu';
 const storageKey = 'vut-theme';
 
 const themes: Array<[VuiTheme, string]> = [
-  ['neon-green', 'Неон: зелёный'],
+  ['neon-green', 'Киберпанк'],
   ['neon-magenta', 'Неон: пурпурный'],
   ['neon-cyan', 'Неон: бирюзовый'],
   ['dark', 'Тёмная'],

@@ -7,10 +7,9 @@ export const channels = {
   copy: 'fs:copy',
   move: 'fs:move',
   open: 'fs:open',
-  contextMenu: 'fs:context-menu',
-  shellMenu: 'fs:shell-menu',
-  shellInvoke: 'fs:shell-invoke',
-  shellDismiss: 'fs:shell-dismiss',
+  contextMenuGet: 'fs:context-menu-get',
+  contextMenuExecute: 'fs:context-menu-execute',
+  contextMenuDismiss: 'fs:context-menu-dismiss',
   minimize: 'window:minimize',
   toggleMaximize: 'window:toggle-maximize',
   close: 'window:close',
@@ -36,19 +35,6 @@ export interface OpenedSource extends SourceRequest {
   target: SourceTarget;
 }
 
-export interface ContextMenuRequest {
-  x: number;
-  y: number;
-  kind: SourceKind;
-  open: boolean;
-  rename: boolean;
-  transfer: boolean;
-  remove: boolean;
-  paths: string[];
-  directory: string;
-  extended: boolean;
-}
-
 export interface ShellMenuNode {
   label: string;
   shortcut: string;
@@ -56,21 +42,10 @@ export interface ShellMenuNode {
   disabled: boolean;
   checked: boolean;
   command: number | null;
+  /** Canonical shell verb, such as `open` or `properties`. Empty when the shell did not name one. */
+  verb?: string;
   children: ShellMenuNode[];
 }
-
-export type ContextAction =
-  | 'open'
-  | 'rename'
-  | 'copy'
-  | 'move'
-  | 'delete'
-  | 'terminal'
-  | 'download'
-  | 'upload'
-  | 'copy-address'
-  | 'disconnect'
-  | 'shell';
 
 export type Result<T> = { ok: true; value: T } | { ok: false; message: string };
 

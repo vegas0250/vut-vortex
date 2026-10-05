@@ -12,33 +12,75 @@ internal static class ShellMenuProgram
         {
             Console.InputEncoding = Encoding.UTF8;
             Console.OutputEncoding = Encoding.UTF8;
-            if (args.Length != 1 || args[0] != "list") return Fail("usage");
+            if (args.Length != 1 || args[0] != "serve") return Fail("usage");
             Native.SetProcessDpiAwarenessContext(Native.PerMonitorV2);
-            bool extended = false;
-            long owner = 0;
-            string mode = "folder";
-            var paths = new List<string>();
+            Console.WriteLine("ready");
+            Console.Out.Flush();
+            ShellSession session = null;
             string line;
-            while ((line = Console.ReadLine()) != null && line != ".")
+            while ((line = Console.ReadLine()) != null)
             {
-                if (line.StartsWith("extended ")) extended = line.Substring(9).Trim() == "1";
-                else if (line.StartsWith("owner ")) owner = long.Parse(line.Substring(6).Trim());
-                else if (line.StartsWith("mode ")) mode = line.Substring(5).Trim();
-                else if (line.StartsWith("path ")) paths.Add(line.Substring(5));
-            }
-            using (var session = MenuHost.Open(mode, paths.ToArray(), extended, new IntPtr(owner)))
-            {
-                Console.WriteLine(session.Json());
-                Console.Out.Flush();
-                string next = Console.ReadLine();
-                if (next != null && next.StartsWith("invoke "))
+                if (line == "quit")
                 {
-                    int command = int.Parse(next.Substring(7).Trim());
-                    session.Run(command);
-                    Console.WriteLine("invoked");
-                    Console.Out.Flush();
+                    if (session != null) session.Dispose();
+                    return 0;
                 }
+                if (line == "release")
+                {
+                    if (session != null) session.Dispose();
+                    session = null;
+                    Console.WriteLine("released");
+                    Console.Out.Flush();
+                    continue;
+                }
+                if (line.StartsWith("invoke "))
+                {
+                    try
+                    {
+                        if (session == null) throw new InvalidOperationException("Меню уже закрыто");
+                        session.Run(int.Parse(line.Substring(7).Trim()));
+                        Console.WriteLine("invoked");
+                    }
+                    catch (Exception error)
+                    {
+                        Console.WriteLine("error");
+                        Console.Error.WriteLine(error.Message);
+                    }
+                    Console.Out.Flush();
+                    if (session != null) session.Dispose();
+                    session = null;
+                    continue;
+                }
+                if (line != "list") continue;
+                if (session != null) session.Dispose();
+                session = null;
+                bool extended = false;
+                long owner = 0;
+                string mode = "folder";
+                var paths = new List<string>();
+                string header;
+                while ((header = Console.ReadLine()) != null && header != ".")
+                {
+                    if (header.StartsWith("extended ")) extended = header.Substring(9).Trim() == "1";
+                    else if (header.StartsWith("owner ")) owner = long.Parse(header.Substring(6).Trim());
+                    else if (header.StartsWith("mode ")) mode = header.Substring(5).Trim();
+                    else if (header.StartsWith("path ")) paths.Add(header.Substring(5));
+                }
+                try
+                {
+                    session = MenuHost.Open(mode, paths.ToArray(), extended, new IntPtr(owner));
+                    Console.WriteLine(session.Json());
+                }
+                catch (Exception error)
+                {
+                    if (session != null) session.Dispose();
+                    session = null;
+                    Console.WriteLine("error");
+                    Console.Error.WriteLine(error.Message);
+                }
+                Console.Out.Flush();
             }
+            if (session != null) session.Dispose();
             return 0;
         }
         catch (Exception error)
@@ -65,6 +107,7 @@ internal static class MenuHost
     {
         var session = new ShellSession();
         session.Owner = owner;
+        session.Paths = paths ?? new string[0];
         try
         {
             session.Window = CreateHost();
@@ -78,7 +121,7 @@ internal static class MenuHost
             else
             {
                 if (paths.Length == 0 || paths[0].Length == 0) throw new InvalidOperationException("Нет каталога");
-                session.ContextPointer = FolderMenu(session.Window, paths[0]);
+                session.ContextPointer = FolderMenu(session.Window, paths[0], out session.Absolute);
             }
             session.Context = (IContextMenu)Marshal.GetObjectForIUnknown(session.ContextPointer);
             AttachHandlers(session.ContextPointer);
@@ -86,7 +129,15 @@ internal static class MenuHost
             int query = session.Context.QueryContextMenu(session.Menu, 0, 1, 0x7FFF, flags);
             if (query < 0) Marshal.ThrowExceptionForHR(query);
             Wake(session.Menu, IntPtr.Zero);
-            session.Nodes = Trim(Walk(session.Context, session.Menu, 0));
+            IntPtr verbBuffer = Marshal.AllocCoTaskMem(1024);
+            try
+            {
+                session.Nodes = Trim(Walk(session.Context, session.Menu, 0, verbBuffer));
+            }
+            finally
+            {
+                Marshal.FreeCoTaskMem(verbBuffer);
+            }
             return session;
         }
         catch
@@ -109,7 +160,7 @@ internal static class MenuHost
         }
     }
 
-    private static List<ShellNode> Walk(IContextMenu context, IntPtr menu, int depth)
+    private static List<ShellNode> Walk(IContextMenu context, IntPtr menu, int depth, IntPtr verbBuffer)
     {
         var nodes = new List<ShellNode>();
         if (menu == IntPtr.Zero || depth > 8) return nodes;
@@ -131,7 +182,7 @@ internal static class MenuHost
                 SplitLabel(raw, out label, out shortcut);
                 IntPtr nested = info.hSubMenu != IntPtr.Zero ? info.hSubMenu : Native.GetSubMenu(menu, index);
                 if (nested != IntPtr.Zero) Wake(nested, new IntPtr(index));
-                var children = nested != IntPtr.Zero ? Walk(context, nested, depth + 1) : new List<ShellNode>();
+                var children = nested != IntPtr.Zero ? Walk(context, nested, depth + 1, verbBuffer) : new List<ShellNode>();
                 int command = -1;
                 if (!separator && info.wID >= 1) command = (int)info.wID - 1;
                 if (!separator && label.Length == 0 && command >= 0) label = CommandText(context, (uint)command);
@@ -143,6 +194,7 @@ internal static class MenuHost
                 node.disabled = (info.fState & 0x3) != 0;
                 node.marked = (info.fState & 0x8) != 0;
                 node.command = children.Count == 0 ? command : -1;
+                node.verb = node.command >= 0 ? ReadVerb(context, (uint)node.command, verbBuffer) : "";
                 node.children = children;
                 nodes.Add(node);
             }
@@ -192,6 +244,11 @@ internal static class MenuHost
         {
             Marshal.FreeCoTaskMem(buffer);
         }
+    }
+
+    public static string ReadVerb(IContextMenu context, uint command, IntPtr buffer)
+    {
+        return ReadCommand(context, command, 4, buffer);
     }
 
     private static string ReadCommand(IContextMenu context, uint command, uint kind, IntPtr buffer)
@@ -291,12 +348,14 @@ internal static class MenuHost
         }
     }
 
-    private static IntPtr FolderMenu(IntPtr hwnd, string path)
+    private static IntPtr FolderMenu(IntPtr hwnd, string path, out IntPtr[] absolute)
     {
+        absolute = new IntPtr[0];
         uint eaten;
-        IntPtr absolute;
-        int parsed = Native.SHParseDisplayName(path, IntPtr.Zero, out absolute, 0, out eaten);
+        IntPtr parsedPidl;
+        int parsed = Native.SHParseDisplayName(path, IntPtr.Zero, out parsedPidl, 0, out eaten);
         if (parsed < 0) Marshal.ThrowExceptionForHR(parsed);
+        absolute = new[] { parsedPidl };
         IntPtr desktopPointer;
         int desktopHr = Native.SHGetDesktopFolder(out desktopPointer);
         if (desktopHr < 0) Marshal.ThrowExceptionForHR(desktopHr);
@@ -304,7 +363,7 @@ internal static class MenuHost
         {
             var desktop = (IShellFolder)Marshal.GetObjectForIUnknown(desktopPointer);
             IntPtr folderPointer;
-            int bound = desktop.BindToObject(absolute, IntPtr.Zero, ref Native.IidShellFolder, out folderPointer);
+            int bound = desktop.BindToObject(parsedPidl, IntPtr.Zero, ref Native.IidShellFolder, out folderPointer);
             Marshal.ReleaseComObject(desktop);
             if (bound < 0) Marshal.ThrowExceptionForHR(bound);
             try
@@ -319,7 +378,6 @@ internal static class MenuHost
             finally
             {
                 Marshal.Release(folderPointer);
-                Native.ILFree(absolute);
             }
         }
         finally
@@ -330,6 +388,11 @@ internal static class MenuHost
 
     private static IntPtr OnMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
     {
+        if (message == Native.WM_TIMER)
+        {
+            Native.FocusPropertySheet(hwnd);
+            return IntPtr.Zero;
+        }
         if (message == Native.WM_INITMENUPOPUP || message == Native.WM_DRAWITEM || message == Native.WM_MEASUREITEM || message == Native.WM_MENUCHAR)
         {
             if (Menu3 != null)
@@ -355,6 +418,7 @@ internal sealed class ShellNode
     public bool disabled;
     public bool marked;
     public int command = -1;
+    public string verb = "";
     public List<ShellNode> children = new List<ShellNode>();
 }
 
@@ -365,6 +429,7 @@ internal sealed class ShellSession : IDisposable
     public IntPtr ContextPointer;
     public IntPtr Owner;
     public IntPtr[] Absolute = new IntPtr[0];
+    public string[] Paths = new string[0];
     public IContextMenu Context;
     public List<ShellNode> Nodes = new List<ShellNode>();
     private bool disposed;
@@ -385,9 +450,63 @@ internal sealed class ShellSession : IDisposable
     public void Run(int command)
     {
         if (Context == null) throw new InvalidOperationException("Меню уже закрыто");
+        string verb = Verb(command);
+        Native.PrepareForeground(Owner);
+        try
+        {
+            if (string.Equals(verb, "properties", StringComparison.OrdinalIgnoreCase) && ShowProperties()) return;
+            InvokeIndex(command);
+        }
+        finally
+        {
+            Native.ReleaseForeground(Owner);
+        }
+    }
+
+    private string Verb(int command)
+    {
+        IntPtr buffer = Marshal.AllocCoTaskMem(1024);
+        try
+        {
+            return MenuHost.ReadVerb(Context, (uint)command, buffer);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(buffer);
+        }
+    }
+
+    private bool ShowProperties()
+    {
+        if (Absolute == null || Absolute.Length != 1 || Absolute[0] == IntPtr.Zero) return false;
+        var info = new Native.SHELLEXECUTEINFO();
+        info.cbSize = Marshal.SizeOf(typeof(Native.SHELLEXECUTEINFO));
+        info.fMask = Native.SEE_MASK_INVOKEIDLIST | Native.SEE_MASK_FLAG_NO_UI | Native.SEE_MASK_FLAG_DDEWAIT | Native.SEE_MASK_UNICODE | Native.SEE_MASK_NOZONECHECKS;
+        info.hwnd = Owner;
+        info.lpVerb = "properties";
+        info.lpIDList = Absolute[0];
+        info.nShow = Native.SW_SHOWNORMAL;
+        Native.FocusOwner = Owner;
+        Native.sheetFocused = false;
+        Native.SetTimer(Window, Native.FocusTimer, 30, IntPtr.Zero);
+        try
+        {
+            if (!Native.ShellExecuteEx(ref info)) return false;
+            Native.WaitForDialogs(Window);
+            return true;
+        }
+        finally
+        {
+            Native.KillTimer(Window, Native.FocusTimer);
+            Native.FocusOwner = IntPtr.Zero;
+        }
+    }
+
+    private void InvokeIndex(int command)
+    {
         var info = new Native.CMINVOKECOMMANDINFO();
         info.cbSize = Marshal.SizeOf(typeof(Native.CMINVOKECOMMANDINFO));
-        info.hwnd = Owner != IntPtr.Zero ? Owner : Window;
+        info.hwnd = Owner;
         info.lpVerb = (IntPtr)command;
         info.nShow = Native.SW_SHOWNORMAL;
         IntPtr pointer = Marshal.AllocHGlobal(info.cbSize);
@@ -428,6 +547,7 @@ internal sealed class ShellSession : IDisposable
         builder.Append(",\"separator\":").Append(node.separator ? "true" : "false");
         builder.Append(",\"disabled\":").Append(node.disabled ? "true" : "false");
         builder.Append(",\"checked\":").Append(node.marked ? "true" : "false");
+        builder.Append(",\"verb\":").Append(Json(node.verb));
         builder.Append(",\"command\":");
         if (node.command < 0) builder.Append("null");
         else builder.Append(node.command);
@@ -479,7 +599,37 @@ internal static class Native
     public const uint WM_MEASUREITEM = 0x002C;
     public const uint WM_INITMENUPOPUP = 0x0117;
     public const uint WM_MENUCHAR = 0x0120;
+    public const uint WM_TIMER = 0x0113;
+    public const uint GW_OWNER = 4;
+    public static readonly UIntPtr FocusTimer = new UIntPtr(0x4F43);
+    public static IntPtr FocusOwner;
     public const int SW_SHOWNORMAL = 1;
+    public const uint SEE_MASK_INVOKEIDLIST = 0x0000000C;
+    public const uint SEE_MASK_FLAG_NO_UI = 0x00000400;
+    public const uint SEE_MASK_FLAG_DDEWAIT = 0x00000100;
+    public const uint SEE_MASK_UNICODE = 0x00004000;
+    public const uint SEE_MASK_NOZONECHECKS = 0x00800000;
+    public const int ASFW_ANY = -1;
+    private static uint attachedThread;
+
+    public static void PrepareForeground(IntPtr owner)
+    {
+        AllowSetForegroundWindow(ASFW_ANY);
+        if (owner == IntPtr.Zero) return;
+        uint processId;
+        uint ownerThread = GetWindowThreadProcessId(owner, out processId);
+        uint current = GetCurrentThreadId();
+        if (ownerThread != 0 && ownerThread != current && AttachThreadInput(current, ownerThread, true)) attachedThread = ownerThread;
+    }
+
+    public static void ReleaseForeground(IntPtr owner)
+    {
+        if (attachedThread == 0) return;
+        uint current = GetCurrentThreadId();
+        AttachThreadInput(current, attachedThread, false);
+        attachedThread = 0;
+        if (owner == IntPtr.Zero) return;
+    }
 
     public delegate IntPtr WndProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
 
@@ -511,6 +661,37 @@ internal static class Native
         public uint dwHotKey;
         public IntPtr hIcon;
     }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct SHELLEXECUTEINFO
+    {
+        public int cbSize;
+        public uint fMask;
+        public IntPtr hwnd;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string lpVerb;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string lpFile;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string lpParameters;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string lpDirectory;
+        public int nShow;
+        public IntPtr hInstApp;
+        public IntPtr lpIDList;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string lpClass;
+        public IntPtr hkeyClass;
+        public uint dwHotKey;
+        public IntPtr hIcon;
+        public IntPtr hProcess;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool ShellExecuteEx(ref SHELLEXECUTEINFO info);
+
+    [DllImport("user32.dll")]
+    public static extern bool AllowSetForegroundWindow(int processId);
 
     [DllImport("user32.dll")]
     public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
@@ -576,6 +757,135 @@ internal static class Native
 
     [DllImport("kernel32.dll")]
     public static extern uint GetCurrentThreadId();
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentProcessId();
+
+    public delegate bool EnumProc(IntPtr hwnd, IntPtr param);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MSG
+    {
+        public IntPtr hwnd;
+        public uint message;
+        public IntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public int ptX;
+        public int ptY;
+    }
+
+    public const uint PM_REMOVE = 0x0001;
+
+    [DllImport("user32.dll")]
+    public static extern bool PeekMessage(out MSG message, IntPtr hwnd, uint filterMin, uint filterMax, uint remove);
+
+    [DllImport("user32.dll")]
+    public static extern bool TranslateMessage(ref MSG message);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr DispatchMessage(ref MSG message);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumProc callback, IntPtr param);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetFocus(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool BringWindowToTop(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    public static extern UIntPtr SetTimer(IntPtr hwnd, UIntPtr id, uint milliseconds, IntPtr procedure);
+
+    [DllImport("user32.dll")]
+    public static extern bool KillTimer(IntPtr hwnd, UIntPtr id);
+
+    public static bool sheetFocused;
+
+    public static void FocusPropertySheet(IntPtr host)
+    {
+        if (sheetFocused) return;
+        IntPtr dialog = FindPropertySheet(host);
+        if (dialog == IntPtr.Zero) return;
+        AllowSetForegroundWindow(ASFW_ANY);
+        SetForegroundWindow(dialog);
+        BringWindowToTop(dialog);
+        SetFocus(dialog);
+        sheetFocused = true;
+    }
+
+    private static IntPtr foundSheet;
+    private static IntPtr sheetHost;
+    private static readonly EnumProc sheetScan = ScanSheet;
+
+    private static bool ScanSheet(IntPtr hwnd, IntPtr param)
+    {
+        if (hwnd == sheetHost || !IsWindowVisible(hwnd)) return true;
+        uint processId;
+        GetWindowThreadProcessId(hwnd, out processId);
+        IntPtr owner = GetWindow(hwnd, GW_OWNER);
+        bool ours = processId == GetCurrentProcessId();
+        bool owned = FocusOwner != IntPtr.Zero && owner == FocusOwner;
+        if (ours || owned) foundSheet = hwnd;
+        return true;
+    }
+
+    private static IntPtr FindPropertySheet(IntPtr host)
+    {
+        foundSheet = IntPtr.Zero;
+        sheetHost = host;
+        EnumWindows(sheetScan, IntPtr.Zero);
+        return foundSheet;
+    }
+
+    private static bool dialogVisible;
+    private static IntPtr dialogSkip;
+    private static readonly EnumProc dialogScan = ScanDialog;
+
+    private static bool ScanDialog(IntPtr hwnd, IntPtr param)
+    {
+        if (hwnd == dialogSkip || !IsWindowVisible(hwnd)) return true;
+        uint processId;
+        GetWindowThreadProcessId(hwnd, out processId);
+        if (processId == GetCurrentProcessId()) dialogVisible = true;
+        return true;
+    }
+
+    public static bool DialogVisible(IntPtr skip)
+    {
+        dialogVisible = false;
+        dialogSkip = skip;
+        EnumWindows(dialogScan, IntPtr.Zero);
+        return dialogVisible;
+    }
+
+    public static void WaitForDialogs(IntPtr skip)
+    {
+        int start = Environment.TickCount;
+        int shown = -1;
+        while (true)
+        {
+            MSG message;
+            while (PeekMessage(out message, IntPtr.Zero, 0, 0, PM_REMOVE))
+            {
+                TranslateMessage(ref message);
+                DispatchMessage(ref message);
+            }
+            bool open = DialogVisible(skip);
+            int now = Environment.TickCount;
+            if (open && shown < 0) shown = now;
+            if (shown >= 0 && !open) return;
+            if (shown < 0 && unchecked(now - start) > 200) return;
+            System.Threading.Thread.Sleep(15);
+        }
+    }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr GetModuleHandle(string module);

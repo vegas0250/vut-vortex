@@ -1,7 +1,7 @@
 import { lstat, mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import { cp } from 'node:fs/promises';
 import path from 'node:path';
-import { parentPath, separatorOf, sortEntries, type DirectoryPage, type FileEntry, type FileKind, type LocationIndex } from '../../shared/files';
+import { includeListed, parentPath, separatorOf, sortEntries, type DirectoryPage, type FileEntry, type FileKind, type LocationIndex } from '../../shared/files';
 import { singleSegment } from '../../shared/files';
 import { locationPlaces, platform } from '../platform/index';
 
@@ -58,22 +58,27 @@ function containedBy(parent: string, child: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-export async function listDirectory(input: unknown, showHidden: boolean): Promise<DirectoryPage> {
+export async function listDirectory(input: unknown, showHidden: boolean, showSystem = false): Promise<DirectoryPage> {
   if (typeof input === 'string') {
     const special = await platform().specialList(input, showHidden);
-    if (special) return withNavigation(special);
+    if (special) {
+      const entries = special.entries.filter((entry) => includeListed(entry.hidden, entry.system, showHidden, showSystem));
+      return withNavigation({ ...special, entries });
+    }
   }
   const directory = absolutePath(input);
   const info = await lstat(directory);
   if (!info.isDirectory() && !info.isSymbolicLink()) throw new Error('Это не каталог');
   const adapter = platform();
-  const [children, hidden] = await Promise.all([
+  const [children, hidden, system] = await Promise.all([
     readdir(directory, { withFileTypes: true }),
     adapter.hiddenNames(directory),
+    adapter.systemNames(directory),
   ]);
   const entries = await mapPool(children, STAT_CONCURRENCY, async (child): Promise<FileEntry | null> => {
     const hiddenEntry = adapter.isHiddenName(child.name) || hidden.has(child.name);
-    if (hiddenEntry && !showHidden) return null;
+    const systemEntry = system.has(child.name);
+    if (!includeListed(hiddenEntry, systemEntry, showHidden, showSystem)) return null;
     const full = path.join(directory, child.name);
     try {
       const item = await lstat(full);
@@ -84,6 +89,7 @@ export async function listDirectory(input: unknown, showHidden: boolean): Promis
         size: item.isDirectory() ? null : item.size,
         modified: item.mtimeMs,
         hidden: hiddenEntry,
+        system: systemEntry,
       };
     } catch {
       return {
@@ -93,6 +99,7 @@ export async function listDirectory(input: unknown, showHidden: boolean): Promis
         size: null,
         modified: null,
         hidden: hiddenEntry,
+        system: systemEntry,
       };
     }
   });
@@ -112,6 +119,7 @@ function withNavigation(page: DirectoryPage): DirectoryPage {
     size: null,
     modified: null,
     hidden: false,
+    system: false,
   };
   const rest = page.entries.filter((entry) => entry.name !== '.' && entry.name !== '..');
   return { ...page, entries: [up, ...rest] };

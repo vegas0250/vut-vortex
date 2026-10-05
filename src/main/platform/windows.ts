@@ -193,6 +193,14 @@ export const windowsPlatform: PlatformAdapter = {
       return new Set();
     }
   },
+  async systemNames(directory: string): Promise<ReadonlySet<string>> {
+    try {
+      const names = await hiddenListing(directory, '/a:s');
+      return new Set(names);
+    } catch {
+      return new Set();
+    }
+  },
   async roots(): Promise<Place[]> {
     const found: Place[] = [];
     for (let code = 65; code <= 90; code += 1) {
@@ -212,6 +220,7 @@ export const windowsPlatform: PlatformAdapter = {
           size: null,
           modified: null,
           hidden: false,
+          system: false,
         }));
         return { path: '\\\\', parent: null, separator: '\\' as const, entries };
       })

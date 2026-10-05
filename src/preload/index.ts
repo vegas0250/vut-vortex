@@ -1,19 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import {
-  channels,
-  type ContextAction,
-  type ContextMenuRequest,
-  type ShellMenuNode,
-  type OpenedSource,
-  type Result,
-  type SourceRequest,
-  type SourceTarget,
-} from '../shared/ipc';
+import { channels, type OpenedSource, type Result, type SourceRequest, type SourceTarget } from '../shared/ipc';
+import type { ContextMenuExecuteRequest, ContextMenuModel, ContextMenuQuery } from '../shared/context-menu';
 import type { DirectoryPage, LocationIndex } from '../shared/files';
 
 const api = {
-  list: (target: string, showHidden: boolean): Promise<Result<DirectoryPage>> =>
-    ipcRenderer.invoke(channels.list, target, showHidden),
+  list: (target: string, showHidden: boolean, showSystem = false): Promise<Result<DirectoryPage>> =>
+    ipcRenderer.invoke(channels.list, target, showHidden, showSystem),
   locations: (): Promise<Result<LocationIndex>> => ipcRenderer.invoke(channels.locations),
   mkdir: (parent: string, name: string): Promise<Result<string>> => ipcRenderer.invoke(channels.mkdir, parent, name),
   rename: (target: string, name: string): Promise<Result<string>> => ipcRenderer.invoke(channels.rename, target, name),
@@ -23,12 +15,11 @@ const api = {
   move: (targets: string[], destination: string): Promise<Result<void>> =>
     ipcRenderer.invoke(channels.move, targets, destination),
   open: (target: string): Promise<Result<void>> => ipcRenderer.invoke(channels.open, target),
-  contextMenu: (request: ContextMenuRequest): Promise<Result<ContextAction | null>> =>
-    ipcRenderer.invoke(channels.contextMenu, request),
-  shellMenu: (request: ContextMenuRequest): Promise<Result<ShellMenuNode[] | null>> =>
-    ipcRenderer.invoke(channels.shellMenu, request),
-  shellInvoke: (command: number): Promise<Result<boolean>> => ipcRenderer.invoke(channels.shellInvoke, command),
-  shellDismiss: (): Promise<Result<void>> => ipcRenderer.invoke(channels.shellDismiss),
+  contextMenuGet: (query: ContextMenuQuery): Promise<Result<ContextMenuModel>> =>
+    ipcRenderer.invoke(channels.contextMenuGet, query),
+  contextMenuExecute: (request: ContextMenuExecuteRequest): Promise<Result<boolean>> =>
+    ipcRenderer.invoke(channels.contextMenuExecute, request),
+  contextMenuDismiss: (): Promise<Result<void>> => ipcRenderer.invoke(channels.contextMenuDismiss),
   minimize: (): void => ipcRenderer.send(channels.minimize),
   toggleMaximize: (): void => ipcRenderer.send(channels.toggleMaximize),
   close: (): void => ipcRenderer.send(channels.close),

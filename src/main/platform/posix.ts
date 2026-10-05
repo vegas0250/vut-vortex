@@ -59,6 +59,9 @@ export const posixPlatform: PlatformAdapter = {
   hiddenNames(): Promise<ReadonlySet<string>> {
     return Promise.resolve(new Set());
   },
+  systemNames(): Promise<ReadonlySet<string>> {
+    return Promise.resolve(new Set());
+  },
   roots(): Promise<Place[]> {
     return Promise.resolve([{ id: 'root', label: 'Корень', path: '/' }]);
   },

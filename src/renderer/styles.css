@@ -76,6 +76,10 @@ vui-shell {
   min-height: 0;
 }
 
+vui-shell::part(main) {
+  overflow: hidden;
+}
+
 .stage {
   display: flex;
   flex: 1 1 auto;
@@ -108,6 +112,46 @@ vui-shell {
   flex-direction: column;
   gap: var(--vui-space-xs);
   min-width: 0;
+}
+
+.pane-head vui-path-bar {
+  margin-block: var(--vui-space-sm);
+}
+
+vui-menu-item.nav-heading {
+  pointer-events: none;
+  color: var(--vui-color-text-muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+}
+
+.nav-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--vui-space-xs);
+  min-width: 0;
+}
+
+html[data-vui-theme='neon-green'] {
+  scrollbar-color: color-mix(in srgb, var(--vui-color-primary) 50%, transparent) transparent;
+}
+
+html[data-vui-theme='neon-green'] *::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--vui-color-primary) 42%, transparent);
+}
+
+html[data-vui-theme='neon-green'] *::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--vui-color-primary) 70%, transparent);
+}
+
+html[data-vui-theme='neon-green'] vui-titlebar {
+  box-shadow: inset 0 -1px 0 var(--vui-color-border-strong);
+}
+
+.preview-toggle vui-icon {
+  margin-inline-end: var(--vui-space-xs);
 }
 
 .resource {
